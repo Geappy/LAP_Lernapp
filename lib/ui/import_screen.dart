@@ -1,3 +1,4 @@
+// lib/ui/import_screen.dart
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
@@ -6,6 +7,16 @@ import '../models/progress_update.dart';
 import '../services/pdf_parser.dart';
 import '../services/storage_service.dart';
 import './widgets/progress_dialog.dart';
+
+/// --- helper: de-dupe by flashcard.id ---
+List<Flashcard> _dedupeById(List<Flashcard> list) {
+  final seen = <String>{};
+  final out = <Flashcard>[];
+  for (final c in list) {
+    if (seen.add(c.id)) out.add(c);
+  }
+  return out;
+}
 
 class ImportScreen extends StatefulWidget {
   const ImportScreen({super.key});
@@ -103,11 +114,24 @@ class _ImportScreenState extends State<ImportScreen> {
             builder: (ctx, snapshot) {
               final data = snapshot.data;
 
+              // keep de-duped collection no matter how the parser emits
+              final seen = collected.map((c) => c.id).toSet();
+
               if (data?.cards != null && data!.cards!.isNotEmpty) {
-                collected.addAll(data.cards!);
-                if (collected.length % 10 == 0) {
-                  // ignore: avoid_print
-                  print('… bisher ${collected.length} Karten gesammelt');
+                if (data.done) {
+                  // final full batch: replace with de-duped list
+                  collected
+                    ..clear()
+                    ..addAll(_dedupeById(data.cards!));
+                } else {
+                  // per-card emission: append unique only
+                  for (final c in data.cards!) {
+                    if (seen.add(c.id)) collected.add(c);
+                  }
+                  if (collected.length % 10 == 0) {
+                    // ignore: avoid_print
+                    print('… bisher ${collected.length} Karten gesammelt');
+                  }
                 }
               }
 
@@ -115,7 +139,7 @@ class _ImportScreenState extends State<ImportScreen> {
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   _handleParsingDone(
                     rootContext: rootContext,
-                    cards: collected,
+                    cards: _dedupeById(collected), // safety
                     sourceName: _sourceName ?? 'Deck',
                   );
                 });

@@ -11,6 +11,16 @@ import '../services/storage_service.dart';
 import './widgets/progress_dialog.dart';
 import 'lernmodus_screen.dart';
 
+/// --- helper: de-dupe by flashcard.id ---
+List<Flashcard> _dedupeById(List<Flashcard> list) {
+  final seen = <String>{};
+  final out = <Flashcard>[];
+  for (final c in list) {
+    if (seen.add(c.id)) out.add(c);
+  }
+  return out;
+}
+
 class DecksScreen extends StatefulWidget {
   const DecksScreen({super.key});
 
@@ -69,12 +79,24 @@ class _DecksScreenState extends State<DecksScreen> {
               final data = snap.data;
 
               if (data != null) {
-                if (data.cards != null && data.cards!.isNotEmpty) {
-                  collected.addAll(data.cards!);
+                // maintain a local 'seen' for this dialog lifetime
+                final seen = collected.map((c) => c.id).toSet();
+
+                // Prefer the final full batch when present (prevents double-counting)
+                if (data.done && data.cards != null && data.cards!.isNotEmpty) {
+                  collected
+                    ..clear()
+                    ..addAll(_dedupeById(data.cards!));
+                } else if (data.cards != null && data.cards!.isNotEmpty) {
+                  for (final c in data.cards!) {
+                    if (seen.add(c.id)) collected.add(c);
+                  }
                 }
+
                 if (data.unmatched != null && data.unmatched!.isNotEmpty) {
                   unmatched.addAll(data.unmatched!);
                 }
+
                 if (data.done) {
                   WidgetsBinding.instance.addPostFrameCallback((_) async {
                     if (!mounted) return;
@@ -84,7 +106,7 @@ class _DecksScreenState extends State<DecksScreen> {
                     try {
                       await StorageService.saveDeck(
                         title: title.isEmpty ? 'Karteikarten' : title,
-                        cards: collected,
+                        cards: _dedupeById(collected), // safety
                         sourceName: file.name,
                         unmatched: unmatched,
                       );
@@ -93,7 +115,7 @@ class _DecksScreenState extends State<DecksScreen> {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
                           content: Text(
-                            'Deck gespeichert (${collected.length} Karten, ${unmatched.length} Notizen).',
+                            'Deck gespeichert (${_dedupeById(collected).length} Karten, ${unmatched.length} Notizen).',
                           ),
                         ),
                       );
@@ -272,8 +294,7 @@ class _DecksScreenState extends State<DecksScreen> {
                     subtitle: Text(
                       [
                         '${d.cardCount} Karten',
-                        if (d.unmatchedCount != null)
-                          '⚠️ ${d.unmatchedCount} nicht zugeordnet',
+                        if (d.unmatchedCount != null) '⚠️ ${d.unmatchedCount} nicht zugeordnet',
                         d.createdAt.toLocal().toString().replaceFirst(RegExp(r':\d{2}\.\d+$'), ''),
                       ].join(' • '),
                     ),
