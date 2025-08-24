@@ -122,40 +122,26 @@ class _DecksScreenState extends State<DecksScreen> {
   }
 
   Future<void> _openDeck(DeckMeta meta) async {
-    // Tiny loader while we read the full deck from storage
     showDialog<void>(
       context: context,
       barrierDismissible: false,
-      builder: (_) => const Center(
-        child: CircularProgressIndicator(),
-      ),
+      builder: (_) => const Center(child: CircularProgressIndicator()),
     );
-
     final deck = await StorageService.loadDeck(meta.id);
-
     if (!mounted) return;
-    Navigator.of(context).pop(); // close loader
+    Navigator.of(context).pop();
 
-    if (deck == null) {
+    if (deck == null || deck.cards.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Deck konnte nicht geladen werden.')),
       );
       return;
     }
 
-    if (deck.cards.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Dieses Deck enthält keine Karten.')),
-      );
-      return;
-    }
-
-    // Push the learning screen
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => LernmodusScreen(
-          title: deck.title,
-          cards: deck.cards,
+          deck: deck,
         ),
       ),
     );
@@ -170,17 +156,11 @@ class _DecksScreenState extends State<DecksScreen> {
         content: TextField(
           controller: controller,
           autofocus: true,
-          decoration: const InputDecoration(
-            labelText: 'Neuer Titel',
-          ),
+          decoration: const InputDecoration(labelText: 'Neuer Titel'),
         ),
         actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Abbrechen')),
-          FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Speichern')),
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Abbrechen')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Speichern')),
         ],
       ),
     );
@@ -191,14 +171,10 @@ class _DecksScreenState extends State<DecksScreen> {
         await StorageService.renameDeck(d.id, newTitle);
         await _reload();
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Titel aktualisiert.')),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Titel aktualisiert.')));
       } catch (e) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Umbenennen fehlgeschlagen: $e')),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Umbenennen fehlgeschlagen: $e')));
       }
     }
   }
@@ -210,12 +186,8 @@ class _DecksScreenState extends State<DecksScreen> {
         title: const Text('Deck löschen?'),
         content: Text('„${d.title}“ dauerhaft entfernen?'),
         actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Abbrechen')),
-          FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Löschen')),
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Abbrechen')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Löschen')),
         ],
       ),
     );
@@ -223,9 +195,7 @@ class _DecksScreenState extends State<DecksScreen> {
       await StorageService.deleteDeck(d.id);
       await _reload();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Deck gelöscht.')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Deck gelöscht.')));
     }
   }
 
@@ -234,9 +204,7 @@ class _DecksScreenState extends State<DecksScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('Meine Decks')),
       body: _decks.isEmpty
-          ? const Center(
-              child: Text('Noch keine Decks. Importiere ein PDF über den Button.'),
-            )
+          ? const Center(child: Text('Noch keine Decks. Importiere ein PDF über den Button.'))
           : ListView.separated(
               padding: const EdgeInsets.all(12),
               itemCount: _decks.length,
