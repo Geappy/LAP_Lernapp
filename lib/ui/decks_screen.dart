@@ -79,10 +79,9 @@ class _DecksScreenState extends State<DecksScreen> {
               final data = snap.data;
 
               if (data != null) {
-                // maintain a local 'seen' for this dialog lifetime
                 final seen = collected.map((c) => c.id).toSet();
 
-                // Prefer the final full batch when present (prevents double-counting)
+                // bei finaler Lieferung ganze Batch übernehmen
                 if (data.done && data.cards != null && data.cards!.isNotEmpty) {
                   collected
                     ..clear()
@@ -106,7 +105,7 @@ class _DecksScreenState extends State<DecksScreen> {
                     try {
                       await StorageService.saveDeck(
                         title: title.isEmpty ? 'Karteikarten' : title,
-                        cards: _dedupeById(collected), // safety
+                        cards: _dedupeById(collected),
                         sourceName: file.name,
                         unmatched: unmatched,
                       );
@@ -172,6 +171,7 @@ class _DecksScreenState extends State<DecksScreen> {
         builder: (_) => LernmodusScreen(
           cards: deck.cards,
           title: deck.title,
+          progressKey: deck.id, // stabiler Fortschritts-Schlüssel pro Deck
         ),
       ),
     );
@@ -184,15 +184,20 @@ class _DecksScreenState extends State<DecksScreen> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      showDragHandle: true,
       builder: (_) {
         final list = deck?.unmatched ?? const <Unmatched>[];
         return SafeArea(
           child: Padding(
             padding: const EdgeInsets.all(12),
             child: list.isEmpty
-                ? const Text('Keine Notizen – alles erkannt 🎉')
+                ? const Padding(
+                    padding: EdgeInsets.all(16),
+                    child: Text('Keine Notizen – alles erkannt 🎉'),
+                  )
                 : Column(
                     mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text('Nicht zugeordnete Fragenteile (${list.length})',
                           style: Theme.of(context).textTheme.titleMedium),
@@ -206,7 +211,10 @@ class _DecksScreenState extends State<DecksScreen> {
                             final u = list[i];
                             return ListTile(
                               dense: true,
-                              leading: Text('#${u.page}'),
+                              leading: Badge(
+                                label: Text('${u.page}'),
+                                child: const Icon(Icons.description_outlined),
+                              ),
                               title: Text(u.reason),
                               subtitle: Text(u.text),
                             );
@@ -273,47 +281,50 @@ class _DecksScreenState extends State<DecksScreen> {
     }
   }
 
+  String _formatDate(DateTime dt) {
+    final d = dt.toLocal();
+    String two(int n) => n < 10 ? '0$n' : '$n';
+    return '${two(d.day)}.${two(d.month)}.${d.year}, ${two(d.hour)}:${two(d.minute)}';
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Meine Decks')),
+      // Schlichter, schöner AppBar ohne Optionen
+      appBar: AppBar(
+        centerTitle: true,
+        title: Text(
+          'Decks',
+          style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0.2,
+              ),
+        ),
+      ),
+
       body: _decks.isEmpty
-          ? const Center(child: Text('Noch keine Decks. Importiere ein PDF über den Button.'))
-          : ListView.separated(
-              padding: const EdgeInsets.all(12),
-              itemCount: _decks.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 8),
-              itemBuilder: (_, i) {
-                final d = _decks[i];
-                return Card(
-                  elevation: 0.5,
-                  child: ListTile(
-                    onTap: () => _openDeck(d),
-                    leading: const Icon(Icons.style),
-                    title: Text(d.title),
-                    subtitle: Text(
-                      [
-                        '${d.cardCount} Karten',
-                        if (d.unmatchedCount != null) '⚠️ ${d.unmatchedCount} nicht zugeordnet',
-                        d.createdAt.toLocal().toString().replaceFirst(RegExp(r':\d{2}\.\d+$'), ''),
-                      ].join(' • '),
-                    ),
-                    trailing: PopupMenuButton<String>(
-                      onSelected: (v) {
-                        if (v == 'details') _showDetails(d);
-                        if (v == 'rename') _renameDeck(d);
-                        if (v == 'delete') _deleteDeck(d);
-                      },
-                      itemBuilder: (context) => const [
-                        PopupMenuItem(value: 'details', child: Text('Details / Notizen')),
-                        PopupMenuItem(value: 'rename', child: Text('Umbenennen')),
-                        PopupMenuItem(value: 'delete', child: Text('Löschen')),
-                      ],
-                    ),
-                  ),
-                );
-              },
+          ? const _EmptyState() // kein zweiter Import-Button hier
+          : RefreshIndicator(
+              onRefresh: _reload,
+              child: ListView.separated(
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 90),
+                itemCount: _decks.length,
+                separatorBuilder: (_, __) => const SizedBox(height: 10),
+                itemBuilder: (_, i) {
+                  final d = _decks[i];
+                  return _DeckCard(
+                    meta: d,
+                    formatDate: _formatDate,
+                    onOpen: () => _openDeck(d),
+                    onDetails: () => _showDetails(d),
+                    onRename: () => _renameDeck(d),
+                    onDelete: () => _deleteDeck(d),
+                  );
+                },
+              ),
             ),
+
+      // Nur EIN Import-Button (FAB)
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _busy ? null : _importPdf,
         icon: const Icon(Icons.upload_file),
@@ -322,3 +333,233 @@ class _DecksScreenState extends State<DecksScreen> {
     );
   }
 }
+
+class _EmptyState extends StatelessWidget {
+  const _EmptyState();
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.style, size: 64, color: cs.primary.withOpacity(0.8)),
+            const SizedBox(height: 12),
+            const Text(
+              'Noch keine Decks',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Importiere oben rechts über den Button.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: cs.onSurfaceVariant),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DeckCard extends StatelessWidget {
+  const _DeckCard({
+    required this.meta,
+    required this.formatDate,
+    required this.onOpen,
+    required this.onDetails,
+    required this.onRename,
+    required this.onDelete,
+  });
+
+  final DeckMeta meta;
+  final String Function(DateTime) formatDate;
+  final VoidCallback onOpen;
+  final VoidCallback onDetails;
+  final VoidCallback onRename;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final unmatched = meta.unmatchedCount ?? 0;
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(16),
+      onTap: onOpen,
+      child: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [cs.surface, cs.surfaceContainerHighest],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: cs.outline.withOpacity(0.25)),
+          boxShadow: [
+            BoxShadow(
+              color: cs.shadow.withOpacity(0.04),
+              blurRadius: 14,
+              offset: const Offset(0, 8),
+            ),
+          ],
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Row(
+            children: [
+              // Leading bubble
+              Container(
+                width: 46,
+                height: 46,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: LinearGradient(
+                    colors: [cs.primary, cs.primaryContainer],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                ),
+                child: const Center(
+                  child: Icon(Icons.style, color: Colors.white),
+                ),
+              ),
+              const SizedBox(width: 14),
+
+              // Title + meta
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      meta.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 6,
+                      children: [
+                        _chip(context,
+                            icon: Icons.collections_bookmark_outlined,
+                            label: '${meta.cardCount} Karten'),
+                        _chip(context,
+                            icon: Icons.schedule,
+                            label: formatDate(meta.createdAt),
+                            tone: ChipTone.neutral),
+                        if (unmatched > 0)
+                          _chip(context,
+                              icon: Icons.warning_amber_rounded,
+                              label: '$unmatched Notizen',
+                              tone: ChipTone.warning),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+
+              // Per-card menu (Details/Umbenennen/Löschen bleiben sinnvoll)
+              PopupMenuButton<String>(
+                onSelected: (v) {
+                  if (v == 'details') onDetails();
+                  if (v == 'rename') onRename();
+                  if (v == 'delete') onDelete();
+                },
+                itemBuilder: (context) => const [
+                  PopupMenuItem(
+                    value: 'details',
+                    child: Row(
+                      children: [
+                        Icon(Icons.notes_outlined),
+                        SizedBox(width: 10),
+                        Text('Details / Notizen'),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'rename',
+                    child: Row(
+                      children: [
+                        Icon(Icons.drive_file_rename_outline),
+                        SizedBox(width: 10),
+                        Text('Umbenennen'),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'delete',
+                    child: Row(
+                      children: [
+                        Icon(Icons.delete_outline),
+                        SizedBox(width: 10),
+                        Text('Löschen'),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // kleine Tonal-Chips
+  Widget _chip(BuildContext context,
+      {required IconData icon,
+      required String label,
+      ChipTone tone = ChipTone.primary}) {
+    final cs = Theme.of(context).colorScheme;
+    Color bg;
+    Color fg;
+    switch (tone) {
+      case ChipTone.warning:
+        bg = Colors.amber.withOpacity(0.18);
+        fg = Colors.amber.shade800;
+        break;
+      case ChipTone.neutral:
+        bg = cs.surfaceContainerHighest;
+        fg = cs.onSurface.withOpacity(0.75);
+        break;
+      case ChipTone.primary:
+      default:
+        bg = cs.primary.withOpacity(0.12);
+        fg = cs.primary;
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: fg.withOpacity(0.25)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: fg),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 12.5,
+              fontWeight: FontWeight.w700,
+              color: fg,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+enum ChipTone { primary, warning, neutral }

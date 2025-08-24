@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/flashcard.dart';
+import 'package:flutter/services.dart';
+
 
 enum FocusFilter { all, zero, one, twoPlus }
 
@@ -187,93 +189,153 @@ class _LernmodusScreenState extends State<LernmodusScreen> {
     final correct = _correctOf(c);
     final borderColor = _bucketColor(correct);
 
-    return InkWell(
-      borderRadius: BorderRadius.circular(16),
-      onTap: _toggleReveal,
-      child: Card(
-        elevation: 2,
-        shape: RoundedRectangleBorder(
+    final list = _filtered;
+    final key = ValueKey('card_${_keyOf(c)}_${_currentIndex}_${_revealed ? 1 : 0}');
+
+    return Dismissible(
+      key: key,
+      direction: _revealed
+          ? DismissDirection.horizontal
+          : DismissDirection.none,
+      background: Container(
+        alignment: Alignment.centerLeft,
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        decoration: BoxDecoration(
+          color: Colors.green.withOpacity(0.12),
           borderRadius: BorderRadius.circular(16),
-          side: BorderSide(color: borderColor, width: 4),
         ),
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Stack(
-            children: [
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if ((c.number ?? '').isNotEmpty)
-                    Text(
-                      c.number!,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w600,
-                        fontSize: 14,
-                      ),
-                    ),
-                  if ((c.number ?? '').isNotEmpty) const SizedBox(height: 6),
-                  Text(
-                    c.question,
-                    style: const TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  const Divider(),
-                  const SizedBox(height: 8),
-                  AnimatedCrossFade(
-                    duration: const Duration(milliseconds: 180),
-                    crossFadeState: _revealed
-                        ? CrossFadeState.showFirst
-                        : CrossFadeState.showSecond,
-                    firstChild: Text(
-                      c.answer,
-                      style: const TextStyle(fontSize: 18, height: 1.35),
-                    ),
-                    secondChild: Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.symmetric(
-                          vertical: 18, horizontal: 12),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .outline
-                              .withOpacity(0.4),
-                          style: BorderStyle.solid,
-                          width: 1,
-                        ),
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.touch_app,
-                              size: 18,
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurface
-                                  .withOpacity(0.6)),
-                          const SizedBox(width: 8),
-                          Text(
-                            'Tippe, um die Antwort anzuzeigen',
-                            style: TextStyle(
-                              fontSize: 14,
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurface
-                                  .withOpacity(0.6),
-                              fontStyle: FontStyle.italic,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
+        child: const Icon(Icons.check_rounded, size: 32),
+      ),
+      secondaryBackground: Container(
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        decoration: BoxDecoration(
+          color: Colors.red.withOpacity(0.12),
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: const Icon(Icons.close_rounded, size: 32),
+      ),
+      confirmDismiss: (dir) async {
+        if (!_revealed || list.isEmpty) return false;
+        if (dir == DismissDirection.startToEnd) {
+          HapticFeedback.lightImpact();
+          _markRight();
+        } else if (dir == DismissDirection.endToStart) {
+          HapticFeedback.lightImpact();
+          _markWrong();
+        }
+        return false; // don’t remove, we handled it
+      },
+      child: InkWell(
+        borderRadius: BorderRadius.circular(18),
+        onTap: _toggleReveal,
+        child: Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Theme.of(context).colorScheme.surface,
+                Theme.of(context).colorScheme.surfaceContainerHighest,
+              ],
+            ),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: borderColor.withOpacity(0.6), width: 2.5),
+            boxShadow: [
+              BoxShadow(
+                color: borderColor.withOpacity(0.12),
+                blurRadius: 16,
+                offset: const Offset(0, 8),
               ),
             ],
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if ((c.number ?? '').isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.confirmation_number, size: 16),
+                        const SizedBox(width: 6),
+                        Text(
+                          c.number!,
+                          style: TextStyle(
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurface
+                                .withOpacity(0.7),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                Text(
+                  c.question,
+                  style: const TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.w800,
+                    height: 1.2,
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Divider(
+                  height: 1,
+                  color: Theme.of(context)
+                      .colorScheme
+                      .outline
+                      .withOpacity(0.25),
+                ),
+                const SizedBox(height: 10),
+                AnimatedCrossFade(
+                  duration: const Duration(milliseconds: 200),
+                  crossFadeState: _revealed
+                      ? CrossFadeState.showFirst
+                      : CrossFadeState.showSecond,
+                  firstChild: Text(
+                    c.answer,
+                    style: const TextStyle(fontSize: 18, height: 1.35),
+                  ),
+                  secondChild: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                        vertical: 16, horizontal: 12),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: Theme.of(context)
+                            .colorScheme
+                            .outline
+                            .withOpacity(0.35),
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(Icons.touch_app, size: 18),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Tippe, um die Antwort anzuzeigen',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontStyle: FontStyle.italic,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurface
+                                .withOpacity(0.65),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),

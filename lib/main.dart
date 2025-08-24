@@ -5,73 +5,32 @@ import 'ui/decks_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-
-  // Fullscreen: hide both status bar & navigation bar, auto-hide after swipe.
+  // Vollbild (Leisten blenden nach Wisch kurz ein und wieder aus)
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-
   runApp(const KartenApp());
 }
 
 class KartenApp extends StatelessWidget {
   const KartenApp({super.key});
 
+  // Akzentfarbe nach Wunsch anpassen
+  static const Color _seed = Color(0xFF5B7CFA);
+
   @override
   Widget build(BuildContext context) {
-    // Optionally set overlay style for when bars briefly appear
-    SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-      statusBarColor: Colors.transparent, // draw behind status bar
-      statusBarIconBrightness: Brightness.light, // Android
-      statusBarBrightness: Brightness.dark,      // iOS
-      systemNavigationBarColor: Colors.transparent,
-      systemNavigationBarIconBrightness: Brightness.light,
-    ));
-
-    return const _FullscreenReapplicator(
-      child: MaterialApp(
-        title: 'Karteikarten',
-        debugShowCheckedModeBanner: false,
-        home: DecksScreen(),
+    return MaterialApp(
+      title: 'Karteikarten',
+      debugShowCheckedModeBanner: false,
+      themeMode: ThemeMode.system, // folgt System hell/dunkel
+      theme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(seedColor: _seed, brightness: Brightness.light),
       ),
+      darkTheme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(seedColor: _seed, brightness: Brightness.dark),
+      ),
+      home: const DecksScreen(),
     );
   }
-}
-
-/// Some Android OEMs re-show system UI when app resumes.
-/// This widget reapplies the immersive mode on resume.
-class _FullscreenReapplicator extends StatefulWidget {
-  const _FullscreenReapplicator({required this.child, super.key});
-  final Widget child;
-
-  @override
-  State<_FullscreenReapplicator> createState() => _FullscreenReapplicatorState();
-}
-
-class _FullscreenReapplicatorState extends State<_FullscreenReapplicator>
-    with WidgetsBindingObserver {
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    _applyFullscreen();
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    super.dispose();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      _applyFullscreen();
-    }
-  }
-
-  void _applyFullscreen() {
-    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-  }
-
-  @override
-  Widget build(BuildContext context) => widget.child;
 }
