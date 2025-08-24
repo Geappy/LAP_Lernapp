@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # karteikarten_app
 
 A new Flutter project.
@@ -14,3 +15,6 @@ A few resources to get you started if this is your first Flutter project:
 For help getting started with Flutter development, view the
 [online documentation](https://docs.flutter.dev/), which offers tutorials,
 samples, guidance on mobile development, and a full API reference.
+=======
+# LAP_Lernapp
+>>>>>>> 72aea7e51d1a2c6ee9b98d5e16c8f0a95e307298
