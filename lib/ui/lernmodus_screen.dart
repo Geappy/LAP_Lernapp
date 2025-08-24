@@ -1,4 +1,7 @@
+// lib/screens/lernmodus_screen.dart
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/flashcard.dart';
 
 enum FocusFilter { all, zero, one, twoPlus }
@@ -8,32 +11,41 @@ class LernmodusScreen extends StatefulWidget {
     super.key,
     required this.cards,
     required this.title,
+    this.progressKey, // optional: pass a stable deck ID if available
   });
 
   final List<Flashcard> cards;
   final String title;
+  final String? progressKey;
 
   @override
   State<LernmodusScreen> createState() => _LernmodusScreenState();
 }
 
 class _LernmodusScreenState extends State<LernmodusScreen> {
-  // In-Session Tracking: wie oft „Richtig“ für jede Karte
+  // Persistent progress: how often each card was answered "right".
   final Map<String, int> _correctById = {};
 
+  // Local UI state
   FocusFilter _filter = FocusFilter.all;
   bool _showFilterPanel = false;
   int _currentIndex = 0;
-
-  // Antwort erst nach Tipp sichtbar
   bool _revealed = false;
 
-  List<Flashcard> get _allCards => widget.cards;
+  // Persistence helpers
+  late SharedPreferences _prefs;
+  bool _prefsReady = false;
 
-  // Flashcard.id wird als stabiler Schlüssel genutzt
+  // Use a stable key per deck/screen. Prefer deckId; fall back to title.
+  String get _progressKey =>
+      'lernprogress_${widget.progressKey ?? widget.title}';
+
+  // Accessors
+  List<Flashcard> get _allCards => widget.cards;
   String _keyOf(Flashcard c) => c.id;
   int _correctOf(Flashcard c) => _correctById[_keyOf(c)] ?? 0;
 
+  // Filtered view
   List<Flashcard> get _filtered {
     switch (_filter) {
       case FocusFilter.zero:
@@ -48,15 +60,7 @@ class _LernmodusScreenState extends State<LernmodusScreen> {
     }
   }
 
-  void _setFilter(FocusFilter f) {
-    setState(() {
-      _filter = f;
-      _showFilterPanel = false;
-      _currentIndex = 0;
-      _revealed = false;
-    });
-  }
-
+  // Buckets for the progress bar
   ({int zero, int one, int twoPlus}) get _buckets {
     int zero = 0, one = 0, twoPlus = 0;
     for (final c in _allCards) {
@@ -70,6 +74,57 @@ class _LernmodusScreenState extends State<LernmodusScreen> {
       }
     }
     return (zero: zero, one: one, twoPlus: twoPlus);
+  }
+
+  // Lifecycle
+  @override
+  void initState() {
+    super.initState();
+    _initPrefsAndLoad();
+  }
+
+  Future<void> _initPrefsAndLoad() async {
+    _prefs = await SharedPreferences.getInstance();
+
+    // Load saved map if present
+    final raw = _prefs.getString(_progressKey);
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw) as Map<String, dynamic>;
+        decoded.forEach((k, v) {
+          final n = (v is int) ? v : int.tryParse(v.toString()) ?? 0;
+          _correctById[k] = n;
+        });
+      } catch (_) {
+        // Ignore corrupt data; will rebuild from defaults below
+      }
+    }
+
+    // If nothing saved yet, seed from Flashcard.correctCount (your model).
+    if (_correctById.isEmpty) {
+      for (final c in _allCards) {
+        if (c.correctCount != 0) {
+          _correctById[_keyOf(c)] = c.correctCount;
+        }
+      }
+    }
+
+    setState(() => _prefsReady = true);
+  }
+
+  Future<void> _saveProgress() async {
+    // Persist the whole map as JSON
+    await _prefs.setString(_progressKey, jsonEncode(_correctById));
+  }
+
+  // UI actions
+  void _setFilter(FocusFilter f) {
+    setState(() {
+      _filter = f;
+      _showFilterPanel = false;
+      _currentIndex = 0;
+      _revealed = false;
+    });
   }
 
   void _advanceToNext() {
@@ -96,23 +151,29 @@ class _LernmodusScreenState extends State<LernmodusScreen> {
 
     setState(() {
       _correctById[key] = (_correctById[key] ?? 0) + 1;
-      // Karte könnte durch Filter in andere Bucket rutschen → Liste danach neu betrachten
+
+      // Because filter buckets can change after increment, recalc and move.
       final after = _filtered;
       if (after.isEmpty) {
         _currentIndex = 0;
         _revealed = false;
       } else {
-        // gleiche Index-Position weiterbewegen
         _currentIndex = _currentIndex.clamp(0, after.length - 1);
         _advanceToNext();
       }
     });
+
+    _saveProgress(); // persist after change
   }
 
   void _markWrong() {
     if (!_revealed) return;
-    // Falsche Antworten zählen wir nicht, wir gehen nur weiter
+    // Wrong answers are not counted; just move on
     _advanceToNext();
+  }
+
+  void _toggleReveal() {
+    setState(() => _revealed = !_revealed);
   }
 
   Color _bucketColor(int correct) {
@@ -121,10 +182,7 @@ class _LernmodusScreenState extends State<LernmodusScreen> {
     return Colors.red;
   }
 
-  void _toggleReveal() {
-    setState(() => _revealed = !_revealed);
-  }
-
+  // Widgets
   Widget _buildCard(Flashcard c) {
     final correct = _correctOf(c);
     final borderColor = _bucketColor(correct);
@@ -142,7 +200,6 @@ class _LernmodusScreenState extends State<LernmodusScreen> {
           padding: const EdgeInsets.all(20),
           child: Stack(
             children: [
-              // Inhalt
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -165,7 +222,6 @@ class _LernmodusScreenState extends State<LernmodusScreen> {
                   const SizedBox(height: 16),
                   const Divider(),
                   const SizedBox(height: 8),
-                  // Antwortbereich – erst sichtbar, wenn _revealed
                   AnimatedCrossFade(
                     duration: const Duration(milliseconds: 180),
                     crossFadeState: _revealed
@@ -334,7 +390,7 @@ class _LernmodusScreenState extends State<LernmodusScreen> {
   }
 
   Widget _buildBigButtons() {
-    final enabled = _revealed; // erst nach Reveal nutzbar
+    final enabled = _revealed; // only usable after reveal
 
     return Row(
       children: [
@@ -415,6 +471,12 @@ class _LernmodusScreenState extends State<LernmodusScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (!_prefsReady) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
     final list = _filtered;
     final current =
         list.isNotEmpty ? list[_currentIndex.clamp(0, list.length - 1)] : null;
@@ -429,7 +491,8 @@ class _LernmodusScreenState extends State<LernmodusScreen> {
           children: [
             _buildProgressBar(),
             const SizedBox(height: 16),
-            Expanded(child: current == null ? _buildEmptyHint() : _buildCard(current)),
+            Expanded(
+                child: current == null ? _buildEmptyHint() : _buildCard(current)),
             const SizedBox(height: 12),
             _buildBigButtons(),
           ],
