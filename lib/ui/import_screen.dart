@@ -47,13 +47,13 @@ class _ImportScreenState extends State<ImportScreen> {
     try {
       // ignore: avoid_print
       print('💾 Speichere Deck "$title" (${cards.length} Karten) …');
-      final id = await StorageService.saveDeck(
+      await StorageService.saveDeck(
         title: title,
         cards: cards,
         sourceName: sourceName,
       );
       // ignore: avoid_print
-      print('✅ Deck gespeichert: $id');
+      print('✅ Deck gespeichert');
 
       if (!mounted) return;
 

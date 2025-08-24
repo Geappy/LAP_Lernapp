@@ -1,82 +1,139 @@
+// lib/services/storage_service.dart
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
-
 import '../models/deck.dart';
 import '../models/flashcard.dart';
+import '../models/unmatched.dart';
 
 class StorageService {
-  static const _kMetaKey = 'decks:index'; // JSON array of DeckMeta
-  static String _deckKey(String id) => 'deck:$id';
+  // Keys:
+  static const _kIndex = 'decks_index';             // List<String> ids
+  static String _deckKey(String id) => 'deck_$id';  // JSON
 
-  /// List index of decks
+  // --- Index laden/speichern ---
+
+  static Future<List<String>> _getIndex(SharedPreferences prefs) async {
+    final list = prefs.getStringList(_kIndex);
+    return list ?? <String>[];
+  }
+
+  static Future<void> _setIndex(SharedPreferences prefs, List<String> ids) async {
+    await prefs.setStringList(_kIndex, ids);
+  }
+
+  // --- Öffentliche API ---
+
   static Future<List<DeckMeta>> listDecks() async {
     final prefs = await SharedPreferences.getInstance();
-    final s = prefs.getString(_kMetaKey);
-    if (s == null || s.isEmpty) return [];
+    final ids = await _getIndex(prefs);
+
+    final metas = <DeckMeta>[];
+    for (final id in ids) {
+      final jsonStr = prefs.getString(_deckKey(id));
+      if (jsonStr == null) continue;
+      try {
+        final map = jsonDecode(jsonStr) as Map<String, dynamic>;
+        final deck = Deck.fromJson(map);
+        metas.add(DeckMeta(
+          id: deck.id,
+          title: deck.title,
+          cardCount: deck.cardCount,
+          createdAt: deck.createdAt,
+          updatedAt: deck.updatedAt,
+          unmatchedCount: deck.unmatched.isEmpty ? 0 : deck.unmatched.length,
+        ));
+      } catch (_) {
+        // defektes Deck überspringen
+      }
+    }
+    // Neuestes oben
+    metas.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    return metas;
+    }
+
+  static Future<Deck?> loadDeck(String id) async {
+    final prefs = await SharedPreferences.getInstance();
+    final jsonStr = prefs.getString(_deckKey(id));
+    if (jsonStr == null) return null;
     try {
-      return Deck.decodeMetaList(s);
+      return Deck.fromJson(jsonDecode(jsonStr) as Map<String, dynamic>);
     } catch (_) {
-      return [];
+      return null;
     }
   }
 
-  /// Save a new deck and add to index
-  static Future<Deck> saveDeck({
+  /// Neues Deck anlegen (z. B. nach PDF-Import)
+  static Future<String> saveDeck({
     required String title,
     required List<Flashcard> cards,
     String? sourceName,
+    List<Unmatched>? unmatched,
   }) async {
     final prefs = await SharedPreferences.getInstance();
-    final id = DateTime.now().millisecondsSinceEpoch.toString();
+    final now = DateTime.now();
+    final id = now.millisecondsSinceEpoch.toString();
 
-    final deck = Deck(id: id, title: title, sourceName: sourceName, cards: cards);
+    final deck = Deck(
+      id: id,
+      title: title,
+      sourceName: sourceName,
+      createdAt: now,
+      updatedAt: now,
+      cards: cards,
+      unmatched: unmatched ?? const [],
+    );
 
-    // write deck
-    await prefs.setString(_deckKey(deck.id), jsonEncode(deck.toJson()));
-
-    // update index
-    final existing = await listDecks();
-    final updated = [deck.toMeta(), ...existing];
-    await prefs.setString(_kMetaKey, Deck.encodeMetaList(updated));
-
-    return deck;
+    final ok = await prefs.setString(_deckKey(id), jsonEncode(deck.toJson()));
+    if (!ok) {
+      throw Exception('Deck konnte nicht gespeichert werden');
     }
 
-  /// Load full deck by id
-  static Future<Deck?> loadDeck(String id) async {
-    final prefs = await SharedPreferences.getInstance();
-    final s = prefs.getString(_deckKey(id));
-    if (s == null) return null;
-    return Deck.fromJson(jsonDecode(s) as Map<String, dynamic>);
+    final ids = await _getIndex(prefs);
+    ids.add(id);
+    await _setIndex(prefs, ids);
+    return id;
   }
 
-  /// Persist modified deck
+  /// Ganzes Deck überschreiben (z. B. nach Lernfortschritt)
   static Future<void> updateDeck(Deck deck) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_deckKey(deck.id), jsonEncode(deck.toJson()));
-
-    // also keep meta in sync (title/count might change)
-    final list = await listDecks();
-    final idx = list.indexWhere((m) => m.id == deck.id);
-    if (idx != -1) {
-      list[idx] = deck.toMeta();
-      await prefs.setString(_kMetaKey, Deck.encodeMetaList(list));
+    final updated = deck.copyWith(updatedAt: DateTime.now());
+    final ok = await prefs.setString(_deckKey(deck.id), jsonEncode(updated.toJson()));
+    if (!ok) {
+      throw Exception('Deck-Update fehlgeschlagen');
     }
+    // Index beibehalten
   }
 
   static Future<void> renameDeck(String id, String newTitle) async {
     final deck = await loadDeck(id);
     if (deck == null) return;
-    deck.title = newTitle;
-    await updateDeck(deck);
+    final updated = deck.copyWith(title: newTitle, updatedAt: DateTime.now());
+    await updateDeck(updated);
   }
 
   static Future<void> deleteDeck(String id) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_deckKey(id));
+    final ids = await _getIndex(prefs);
+    ids.remove(id);
+    await _setIndex(prefs, ids);
+  }
 
-    final list = await listDecks();
-    list.removeWhere((m) => m.id == id);
-    await prefs.setString(_kMetaKey, Deck.encodeMetaList(list));
+  // Hilfsfunktion: einzelne Karte ersetzen (optional)
+  static Future<void> upsertCard({
+    required String deckId,
+    required Flashcard card,
+  }) async {
+    final deck = await loadDeck(deckId);
+    if (deck == null) return;
+    final idx = deck.cards.indexWhere((c) => c.id == card.id);
+    final newCards = [...deck.cards];
+    if (idx >= 0) {
+      newCards[idx] = card;
+    } else {
+      newCards.add(card);
+    }
+    await updateDeck(deck.copyWith(cards: newCards));
   }
 }

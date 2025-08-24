@@ -1,485 +1,473 @@
 import 'package:flutter/material.dart';
-
-import '../models/deck.dart';
 import '../models/flashcard.dart';
 
-enum FocusMode { all, zero, one, twoPlus }
+enum FocusFilter { all, zero, one, twoPlus }
 
 class LernmodusScreen extends StatefulWidget {
   const LernmodusScreen({
     super.key,
-    required this.deck,
-    this.onSave,
+    required this.cards,
+    required this.title,
   });
 
-  final Deck deck;
-  final Future<void> Function(Deck deck)? onSave;
+  final List<Flashcard> cards;
+  final String title;
 
   @override
   State<LernmodusScreen> createState() => _LernmodusScreenState();
 }
 
 class _LernmodusScreenState extends State<LernmodusScreen> {
-  /// zählt pro Karte, wie oft korrekt beantwortet
-  final Map<String, int> _correct = {};
+  // In-Session Tracking: wie oft „Richtig“ für jede Karte
+  final Map<String, int> _correctById = {};
 
-  /// aktueller Filter
-  FocusMode _focus = FocusMode.all;
+  FocusFilter _filter = FocusFilter.all;
+  bool _showFilterPanel = false;
+  int _currentIndex = 0;
 
-  /// Index im aktuell gefilterten Satz
-  int _index = 0;
+  // Antwort erst nach Tipp sichtbar
+  bool _revealed = false;
 
-  @override
-  void initState() {
-    super.initState();
-    // Alle Karten mit 0 initialisieren (einmalig)
-    for (final c in widget.deck.cards) {
-      _correct.putIfAbsent(_key(c), () => 0);
+  List<Flashcard> get _allCards => widget.cards;
+
+  // Flashcard.id wird als stabiler Schlüssel genutzt
+  String _keyOf(Flashcard c) => c.id;
+  int _correctOf(Flashcard c) => _correctById[_keyOf(c)] ?? 0;
+
+  List<Flashcard> get _filtered {
+    switch (_filter) {
+      case FocusFilter.zero:
+        return _allCards.where((c) => _correctOf(c) == 0).toList();
+      case FocusFilter.one:
+        return _allCards.where((c) => _correctOf(c) == 1).toList();
+      case FocusFilter.twoPlus:
+        return _allCards.where((c) => _correctOf(c) >= 2).toList();
+      case FocusFilter.all:
+      default:
+        return _allCards;
     }
   }
 
-  String _key(Flashcard c) =>
-      '${c.number ?? ''}∷${c.question.trim()}∷${c.answer.trim()}';
-
-  int _countFor(Flashcard c) => _correct[_key(c)] ?? 0;
-
-  List<Flashcard> get _all => widget.deck.cards;
-
-  List<Flashcard> get _visible {
-    switch (_focus) {
-      case FocusMode.all:
-        return _all;
-      case FocusMode.zero:
-        return _all.where((c) => _countFor(c) == 0).toList(growable: false);
-      case FocusMode.one:
-        return _all.where((c) => _countFor(c) == 1).toList(growable: false);
-      case FocusMode.twoPlus:
-        return _all.where((c) => _countFor(c) >= 2).toList(growable: false);
-    }
-  }
-
-  void _setFocus(FocusMode f) {
+  void _setFilter(FocusFilter f) {
     setState(() {
-      _focus = f;
-      // Falls der aktuelle Index fürs neue Set zu groß ist → clampen
-      final v = _visible;
-      if (v.isEmpty) {
-        _index = 0;
-      } else if (_index >= v.length) {
-        _index = 0;
+      _filter = f;
+      _showFilterPanel = false;
+      _currentIndex = 0;
+      _revealed = false;
+    });
+  }
+
+  ({int zero, int one, int twoPlus}) get _buckets {
+    int zero = 0, one = 0, twoPlus = 0;
+    for (final c in _allCards) {
+      final k = _correctOf(c);
+      if (k == 0) {
+        zero++;
+      } else if (k == 1) {
+        one++;
+      } else {
+        twoPlus++;
+      }
+    }
+    return (zero: zero, one: one, twoPlus: twoPlus);
+  }
+
+  void _advanceToNext() {
+    final list = _filtered;
+    if (list.isEmpty) {
+      setState(() {
+        _currentIndex = 0;
+        _revealed = false;
+      });
+      return;
+    }
+    setState(() {
+      _currentIndex = (_currentIndex + 1) % list.length;
+      _revealed = false;
+    });
+  }
+
+  void _markRight() {
+    if (!_revealed) return;
+    final list = _filtered;
+    if (list.isEmpty) return;
+    final card = list[_currentIndex];
+    final key = _keyOf(card);
+
+    setState(() {
+      _correctById[key] = (_correctById[key] ?? 0) + 1;
+      // Karte könnte durch Filter in andere Bucket rutschen → Liste danach neu betrachten
+      final after = _filtered;
+      if (after.isEmpty) {
+        _currentIndex = 0;
+        _revealed = false;
+      } else {
+        // gleiche Index-Position weiterbewegen
+        _currentIndex = _currentIndex.clamp(0, after.length - 1);
+        _advanceToNext();
       }
     });
   }
 
-  /// Geht deterministisch zur nächsten Karte im aktuellen Filterset.
-  void _advance() {
-    final v = _visible;
-    if (v.isEmpty) {
-      setState(() => _index = 0);
-      return;
-    }
-    setState(() => _index = (_index + 1) % v.length);
-  }
-
-  void _markRight() {
-    final v = _visible;
-    if (v.isEmpty) return;
-
-    final current = v[_index];
-    final k = _key(current);
-
-    setState(() {
-      _correct[k] = (_correct[k] ?? 0) + 1;
-    });
-
-    // Karte könnte jetzt aus dem Filter (z.B. zero/one) herausfallen.
-    final v2 = _visible;
-    if (v2.isEmpty) {
-      // Nach dem Hochstufen gibt es hier nichts mehr zu lernen
-      setState(() => _index = 0);
-      return;
-    }
-    // Wenn die gleiche Position nun außerhalb liegt, auf gleiche Position (oder 0) clampen.
-    if (_index >= v2.length) {
-      setState(() => _index = 0);
-    } else {
-      // Im Normalfall einfach zur nächsten Karte
-      _advance();
-    }
-  }
-
   void _markWrong() {
-    // Falsch ändert nichts am Zähler → einfach nächste Karte
-    final v = _visible;
-    if (v.isEmpty) return;
-    _advance();
+    if (!_revealed) return;
+    // Falsche Antworten zählen wir nicht, wir gehen nur weiter
+    _advanceToNext();
   }
 
-  Color _borderColorFor(Flashcard c) {
-    final n = _countFor(c);
-    if (n == 0) return Colors.red;
-    if (n == 1) return Colors.orange;
-    return Colors.green;
+  Color _bucketColor(int correct) {
+    if (correct >= 2) return Colors.green;
+    if (correct == 1) return Colors.orange;
+    return Colors.red;
+  }
+
+  void _toggleReveal() {
+    setState(() => _revealed = !_revealed);
+  }
+
+  Widget _buildCard(Flashcard c) {
+    final correct = _correctOf(c);
+    final borderColor = _bucketColor(correct);
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(16),
+      onTap: _toggleReveal,
+      child: Card(
+        elevation: 2,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(color: borderColor, width: 4),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Stack(
+            children: [
+              // Inhalt
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if ((c.number ?? '').isNotEmpty)
+                    Text(
+                      c.number!,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 14,
+                      ),
+                    ),
+                  if ((c.number ?? '').isNotEmpty) const SizedBox(height: 6),
+                  Text(
+                    c.question,
+                    style: const TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const Divider(),
+                  const SizedBox(height: 8),
+                  // Antwortbereich – erst sichtbar, wenn _revealed
+                  AnimatedCrossFade(
+                    duration: const Duration(milliseconds: 180),
+                    crossFadeState: _revealed
+                        ? CrossFadeState.showFirst
+                        : CrossFadeState.showSecond,
+                    firstChild: Text(
+                      c.answer,
+                      style: const TextStyle(fontSize: 18, height: 1.35),
+                    ),
+                    secondChild: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                          vertical: 18, horizontal: 12),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .outline
+                              .withOpacity(0.4),
+                          style: BorderStyle.solid,
+                          width: 1,
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.touch_app,
+                              size: 18,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurface
+                                  .withOpacity(0.6)),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Tippe, um die Antwort anzuzeigen',
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurface
+                                  .withOpacity(0.6),
+                              fontStyle: FontStyle.italic,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildProgressBar() {
+    final total = _allCards.length;
+    final b = _buckets;
+
+    double f(int n) => total == 0 ? 0 : n / total;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        InkWell(
+          onTap: () => setState(() => _showFilterPanel = !_showFilterPanel),
+          borderRadius: BorderRadius.circular(12),
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Column(
+              children: [
+                SizedBox(
+                  height: 22,
+                  child: Row(
+                    children: [
+                      _SegmentBarPortion(
+                        fraction: f(b.zero),
+                        color: Colors.red,
+                        label: '${b.zero}',
+                      ),
+                      _SegmentBarPortion(
+                        fraction: f(b.one),
+                        color: Colors.orange,
+                        label: '${b.one}',
+                      ),
+                      _SegmentBarPortion(
+                        fraction: f(b.twoPlus),
+                        color: Colors.green,
+                        label: '${b.twoPlus}',
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Gesamt: $total',
+                      style: TextStyle(
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurface
+                            .withOpacity(0.7),
+                      ),
+                    ),
+                    Icon(
+                      _showFilterPanel ? Icons.expand_less : Icons.expand_more,
+                      size: 20,
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+        AnimatedCrossFade(
+          duration: const Duration(milliseconds: 200),
+          crossFadeState: _showFilterPanel
+              ? CrossFadeState.showFirst
+              : CrossFadeState.showSecond,
+          firstChild: Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Wrap(
+              spacing: 8,
+              children: [
+                _filterChip('Alle ($total)', FocusFilter.all,
+                    selected: _filter == FocusFilter.all, color: Colors.blue),
+                _filterChip('0× (${b.zero})', FocusFilter.zero,
+                    selected: _filter == FocusFilter.zero, color: Colors.red),
+                _filterChip('1× (${b.one})', FocusFilter.one,
+                    selected: _filter == FocusFilter.one, color: Colors.orange),
+                _filterChip('2+× (${b.twoPlus})', FocusFilter.twoPlus,
+                    selected: _filter == FocusFilter.twoPlus, color: Colors.green),
+              ],
+            ),
+          ),
+          secondChild: const SizedBox.shrink(),
+        ),
+      ],
+    );
+  }
+
+  Widget _filterChip(String label, FocusFilter f,
+      {required bool selected, required Color color}) {
+    return FilterChip(
+      selected: selected,
+      label: Text(label),
+      onSelected: (_) => _setFilter(f),
+      selectedColor: color.withOpacity(0.15),
+      checkmarkColor: color,
+      side: BorderSide(color: color.withOpacity(0.5)),
+      showCheckmark: selected,
+      labelStyle: TextStyle(
+        color: selected ? color : null,
+        fontWeight: selected ? FontWeight.w600 : null,
+      ),
+    );
+  }
+
+  Widget _buildBigButtons() {
+    final enabled = _revealed; // erst nach Reveal nutzbar
+
+    return Row(
+      children: [
+        Expanded(
+          child: ElevatedButton.icon(
+            onPressed: enabled ? _markWrong : null,
+            icon: const Icon(Icons.close_rounded, size: 28),
+            label: const Text('Falsch'),
+            style: ElevatedButton.styleFrom(
+              minimumSize: const Size.fromHeight(64),
+              elevation: 1,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+              textStyle: const TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w700,
+              ),
+              backgroundColor: enabled
+                  ? Colors.red.withOpacity(0.12)
+                  : Colors.red.withOpacity(0.06),
+              foregroundColor: Colors.red,
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: ElevatedButton.icon(
+            onPressed: enabled ? _markRight : null,
+            icon: const Icon(Icons.check_rounded, size: 28),
+            label: const Text('Richtig'),
+            style: ElevatedButton.styleFrom(
+              minimumSize: const Size.fromHeight(64),
+              elevation: 1,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+              textStyle: const TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w700,
+              ),
+              backgroundColor: enabled
+                  ? Colors.green.withOpacity(0.12)
+                  : Colors.green.withOpacity(0.06),
+              foregroundColor: Colors.green,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildEmptyHint() {
+    final b = _buckets;
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        const Icon(Icons.inbox, size: 48),
+        const SizedBox(height: 12),
+        const Text(
+          'Keine Karten im aktuellen Filter.',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          '0×: ${b.zero}   1×: ${b.one}   2+×: ${b.twoPlus}',
+          style: const TextStyle(fontSize: 14),
+        ),
+        const SizedBox(height: 16),
+        OutlinedButton.icon(
+          onPressed: () => _setFilter(FocusFilter.all),
+          icon: const Icon(Icons.layers),
+          label: const Text('Alle Karten anzeigen'),
+        ),
+      ],
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    // Zähler für Segment/Chips
-    final total = _all.length;
-    final zero = _all.where((c) => _countFor(c) == 0).length;
-    final one = _all.where((c) => _countFor(c) == 1).length;
-    final twoPlus = total - zero - one;
-
-    final v = _visible;
-    final hasCards = v.isNotEmpty;
-    final Flashcard? card = hasCards ? v[_index] : null;
+    final list = _filtered;
+    final current =
+        list.isNotEmpty ? list[_currentIndex.clamp(0, list.length - 1)] : null;
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.deck.title),
-        actions: [
-          PopupMenuButton<FocusMode>(
-            initialValue: _focus,
-            onSelected: _setFocus,
-            itemBuilder: (_) => [
-              const PopupMenuItem(
-                value: FocusMode.all,
-                child: Text('Alle Karten'),
-              ),
-              PopupMenuItem(
-                value: FocusMode.zero,
-                child: Row(
-                  children: [
-                    const Icon(Icons.circle, size: 10, color: Colors.red),
-                    const SizedBox(width: 8),
-                    Text('0× richtig ($zero)'),
-                  ],
-                ),
-              ),
-              PopupMenuItem(
-                value: FocusMode.one,
-                child: Row(
-                  children: [
-                    const Icon(Icons.circle, size: 10, color: Colors.orange),
-                    const SizedBox(width: 8),
-                    Text('1× richtig ($one)'),
-                  ],
-                ),
-              ),
-              PopupMenuItem(
-                value: FocusMode.twoPlus,
-                child: Row(
-                  children: [
-                    const Icon(Icons.circle, size: 10, color: Colors.green),
-                    const SizedBox(width: 8),
-                    Text('≥2× richtig ($twoPlus)'),
-                  ],
-                ),
-              ),
-            ],
-            icon: const Icon(Icons.filter_alt),
-            tooltip: 'Filter wählen',
-          ),
-        ],
+        title: Text(widget.title),
       ),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
-            _StackedSegmentBar(
-              zero: zero,
-              one: one,
-              twoPlus: twoPlus,
-              total: total,
-              selected: _focus,
-              onTap: _setFocus,
-            ),
+            _buildProgressBar(),
             const SizedBox(height: 16),
-            Wrap(
-              spacing: 12,
-              runSpacing: 6,
-              children: [
-                _chip(
-                  label: 'Alle ($total)',
-                  selected: _focus == FocusMode.all,
-                  color: Theme.of(context).colorScheme.primary,
-                  onTap: () => _setFocus(FocusMode.all),
-                ),
-                _chip(
-                  label: '0× ($zero)',
-                  selected: _focus == FocusMode.zero,
-                  color: Colors.red,
-                  onTap: () => _setFocus(FocusMode.zero),
-                ),
-                _chip(
-                  label: '1× ($one)',
-                  selected: _focus == FocusMode.one,
-                  color: Colors.orange,
-                  onTap: () => _setFocus(FocusMode.one),
-                ),
-                _chip(
-                  label: '≥2× ($twoPlus)',
-                  selected: _focus == FocusMode.twoPlus,
-                  color: Colors.green,
-                  onTap: () => _setFocus(FocusMode.twoPlus),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            Expanded(
-              child: hasCards
-                  ? _FlashcardView(
-                      card: card!,
-                      borderColor: _borderColorFor(card),
-                      count: _countFor(card),
-                    )
-                  : _EmptyHint(focus: _focus),
-            ),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: hasCards ? _markWrong : null,
-                    icon: const Icon(Icons.close),
-                    label: const Text('Falsch'),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: hasCards ? _markRight : null,
-                    icon: const Icon(Icons.check),
-                    label: const Text('Richtig'),
-                  ),
-                ),
-              ],
-            ),
+            Expanded(child: current == null ? _buildEmptyHint() : _buildCard(current)),
+            const SizedBox(height: 12),
+            _buildBigButtons(),
           ],
         ),
       ),
     );
   }
-
-  Widget _chip({
-    required String label,
-    required bool selected,
-    required Color color,
-    required VoidCallback onTap,
-  }) {
-    final labelColor =
-        selected ? Color.alphaBlend(Colors.black.withOpacity(0.2), color) : null;
-    final borderColor = selected ? color.withOpacity(0.7) : null;
-
-    return ChoiceChip(
-      label: Text(label),
-      selected: selected,
-      onSelected: (_) => onTap(),
-      selectedColor: color.withOpacity(0.18),
-      labelStyle: TextStyle(
-        color: labelColor,
-        fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-      ),
-      side: selected && borderColor != null ? BorderSide(color: borderColor) : null,
-    );
-  }
 }
 
-// ---------- Karte ----------
-
-class _FlashcardView extends StatefulWidget {
-  const _FlashcardView({
-    required this.card,
-    required this.borderColor,
-    required this.count,
+class _SegmentBarPortion extends StatelessWidget {
+  const _SegmentBarPortion({
+    required this.fraction,
+    required this.color,
+    required this.label,
   });
 
-  final Flashcard card;
-  final Color borderColor;
-  final int count;
-
-  @override
-  State<_FlashcardView> createState() => _FlashcardViewState();
-}
-
-class _FlashcardViewState extends State<_FlashcardView> {
-  bool _showAnswer = false;
-
-  @override
-  void didUpdateWidget(covariant _FlashcardView oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.card != widget.card) {
-      _showAnswer = false; // bei neuer Karte wieder Frage zeigen
-    }
-  }
+  final double fraction; // 0..1
+  final Color color;
+  final String label;
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-
-    return GestureDetector(
-      onTap: () => setState(() => _showAnswer = !_showAnswer),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.all(16),
+    final w = (fraction.isNaN || fraction <= 0) ? 0.0 : fraction;
+    return Expanded(
+      flex: (w * 1000).round().clamp(0, 1000),
+      child: Container(
         decoration: BoxDecoration(
-          border: Border.all(color: widget.borderColor, width: 3),
-          borderRadius: BorderRadius.circular(16),
-          color: cs.surface,
+          color: color.withOpacity(0.25),
+          borderRadius: BorderRadius.circular(6),
         ),
-        child: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              if ((widget.card.number ?? '').trim().isNotEmpty)
-                Text(
-                  widget.card.number!,
-                  style: TextStyle(
-                    color: widget.borderColor,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              const SizedBox(height: 6),
-              Text(
-                widget.card.question.isEmpty
-                    ? '— (keine Frage erkannt) —'
-                    : widget.card.question,
-                style: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              const SizedBox(height: 12),
-              AnimatedCrossFade(
-                crossFadeState: _showAnswer
-                    ? CrossFadeState.showSecond
-                    : CrossFadeState.showFirst,
-                duration: const Duration(milliseconds: 150),
-                firstChild: Text(
-                  'Antwort antippen, um sie zu zeigen',
-                  style: TextStyle(color: cs.outline),
-                ),
-                secondChild: Text(
-                  widget.card.answer.isEmpty
-                      ? '— (keine Antwort erkannt) —'
-                      : widget.card.answer,
-                  style: const TextStyle(fontSize: 16),
-                ),
-              ),
-              const SizedBox(height: 12),
-              Align(
-                alignment: Alignment.centerRight,
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: widget.borderColor.withOpacity(0.12),
-                    borderRadius: BorderRadius.circular(999),
-                    border:
-                        Border.all(color: widget.borderColor.withOpacity(0.5)),
-                  ),
-                  child: Text(
-                    widget.count == 0
-                        ? '0× richtig'
-                        : widget.count == 1
-                            ? '1× richtig'
-                            : '${widget.count}× richtig',
-                    style: TextStyle(
-                      color: widget.borderColor,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-              ),
-            ],
+        alignment: Alignment.center,
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+            color: color,
           ),
-        ),
-      ),
-    );
-  }
-}
-
-// ---------- Segmentbar: 3 gestapelte Segmente (rot/orange/grün) ----------
-
-class _StackedSegmentBar extends StatelessWidget {
-  const _StackedSegmentBar({
-    required this.zero,
-    required this.one,
-    required this.twoPlus,
-    required this.total,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final int zero;
-  final int one;
-  final int twoPlus;
-  final int total;
-  final FocusMode selected;
-  final void Function(FocusMode) onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    if (total == 0) return const SizedBox.shrink();
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final w = constraints.maxWidth;
-        double part(int n) => total == 0 ? 0 : (n / total) * w;
-
-        Widget seg(Color c, int n, FocusMode f) {
-          final sel = selected == f;
-          final width = part(n).clamp(0.0, w);
-          if (width <= 0) return const SizedBox.shrink();
-          return InkWell(
-            onTap: () => onTap(f),
-            child: Container(
-              width: width,
-              height: sel ? 14 : 10,
-              decoration: BoxDecoration(
-                color: c.withOpacity(sel ? 0.85 : 0.55),
-                border: sel ? Border.all(color: c, width: 2) : null,
-                borderRadius: BorderRadius.only(
-                  topLeft: Radius.circular(f == FocusMode.zero ? 999 : 0),
-                  bottomLeft: Radius.circular(f == FocusMode.zero ? 999 : 0),
-                  topRight: Radius.circular(f == FocusMode.twoPlus ? 999 : 0),
-                  bottomRight: Radius.circular(f == FocusMode.twoPlus ? 999 : 0),
-                ),
-              ),
-            ),
-          );
-        }
-
-        return Row(
-          children: [
-            seg(Colors.red, zero, FocusMode.zero),
-            seg(Colors.orange, one, FocusMode.one),
-            seg(Colors.green, twoPlus, FocusMode.twoPlus),
-          ],
-        );
-      },
-    );
-  }
-}
-
-// ---------- Leerer Zustand ----------
-
-class _EmptyHint extends StatelessWidget {
-  const _EmptyHint({required this.focus});
-  final FocusMode focus;
-
-  @override
-  Widget build(BuildContext context) {
-    final text = switch (focus) {
-      FocusMode.all => 'Keine Karten vorhanden.',
-      FocusMode.zero => 'Keine Karten mit 0× richtig.',
-      FocusMode.one => 'Keine Karten mit 1× richtig.',
-      FocusMode.twoPlus => 'Keine Karten mit ≥2× richtig.',
-    };
-    return Center(
-      child: Text(
-        text,
-        style: TextStyle(
-          color: Theme.of(context).colorScheme.outline,
         ),
       ),
     );

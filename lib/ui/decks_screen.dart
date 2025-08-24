@@ -1,9 +1,11 @@
+// lib/ui/decks_screen.dart
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../models/deck.dart';
 import '../models/flashcard.dart';
 import '../models/progress_update.dart';
+import '../models/unmatched.dart';
 import '../services/pdf_parser.dart';
 import '../services/storage_service.dart';
 import './widgets/progress_dialog.dart';
@@ -55,6 +57,7 @@ class _DecksScreenState extends State<DecksScreen> {
 
       final stopwatch = Stopwatch()..start();
       final collected = <Flashcard>[];
+      final unmatched = <Unmatched>[];
 
       await showDialog<void>(
         context: context,
@@ -69,6 +72,9 @@ class _DecksScreenState extends State<DecksScreen> {
                 if (data.cards != null && data.cards!.isNotEmpty) {
                   collected.addAll(data.cards!);
                 }
+                if (data.unmatched != null && data.unmatched!.isNotEmpty) {
+                  unmatched.addAll(data.unmatched!);
+                }
                 if (data.done) {
                   WidgetsBinding.instance.addPostFrameCallback((_) async {
                     if (!mounted) return;
@@ -80,13 +86,14 @@ class _DecksScreenState extends State<DecksScreen> {
                         title: title.isEmpty ? 'Karteikarten' : title,
                         cards: collected,
                         sourceName: file.name,
+                        unmatched: unmatched,
                       );
                       await _reload();
                       if (!mounted) return;
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
                           content: Text(
-                            'Deck gespeichert (${collected.length} Karten).',
+                            'Deck gespeichert (${collected.length} Karten, ${unmatched.length} Notizen).',
                           ),
                         ),
                       );
@@ -141,9 +148,54 @@ class _DecksScreenState extends State<DecksScreen> {
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => LernmodusScreen(
-          deck: deck,
+          cards: deck.cards,
+          title: deck.title,
         ),
       ),
+    );
+  }
+
+  Future<void> _showDetails(DeckMeta d) async {
+    final deck = await StorageService.loadDeck(d.id);
+    if (!mounted) return;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) {
+        final list = deck?.unmatched ?? const <Unmatched>[];
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: list.isEmpty
+                ? const Text('Keine Notizen – alles erkannt 🎉')
+                : Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text('Nicht zugeordnete Fragenteile (${list.length})',
+                          style: Theme.of(context).textTheme.titleMedium),
+                      const SizedBox(height: 8),
+                      Flexible(
+                        child: ListView.separated(
+                          shrinkWrap: true,
+                          itemCount: list.length,
+                          separatorBuilder: (_, __) => const Divider(height: 1),
+                          itemBuilder: (_, i) {
+                            final u = list[i];
+                            return ListTile(
+                              dense: true,
+                              leading: Text('#${u.page}'),
+                              title: Text(u.reason),
+                              subtitle: Text(u.text),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+          ),
+        );
+      },
     );
   }
 
@@ -218,15 +270,21 @@ class _DecksScreenState extends State<DecksScreen> {
                     leading: const Icon(Icons.style),
                     title: Text(d.title),
                     subtitle: Text(
-                      '${d.cardCount} Karten • ${d.createdAt.toLocal()}'
-                          .replaceFirst(RegExp(r':\d{2}\.\d+$'), ''),
+                      [
+                        '${d.cardCount} Karten',
+                        if (d.unmatchedCount != null)
+                          '⚠️ ${d.unmatchedCount} nicht zugeordnet',
+                        d.createdAt.toLocal().toString().replaceFirst(RegExp(r':\d{2}\.\d+$'), ''),
+                      ].join(' • '),
                     ),
                     trailing: PopupMenuButton<String>(
                       onSelected: (v) {
+                        if (v == 'details') _showDetails(d);
                         if (v == 'rename') _renameDeck(d);
                         if (v == 'delete') _deleteDeck(d);
                       },
                       itemBuilder: (context) => const [
+                        PopupMenuItem(value: 'details', child: Text('Details / Notizen')),
                         PopupMenuItem(value: 'rename', child: Text('Umbenennen')),
                         PopupMenuItem(value: 'delete', child: Text('Löschen')),
                       ],
