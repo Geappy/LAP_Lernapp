@@ -86789,7 +86789,7 @@ aaS(a){var s=a.ax8(),r=new A.amo()
 return A.m(r.$1(A.ayt(s)))+"."+A.m(r.$1(A.ayw(s)))+"."+A.B7(s)+", "+A.m(r.$1(A.ayu(s)))+":"+A.m(r.$1(A.ayv(s)))},
 N(a){var s,r=this,q=null,p=A.E(a).ok.r
 p=A.c1("Decks",q,q,q,p==null?q:p.apd(B.eK,0.2),q,q)
-p=A.aB8(A.b([A.zD(q,q,q,B.I4,q,q,r.e?q:new A.amK(r,a),q,q,q,"H1-Deck hinzuf\xfcgen")],t.p),!0,p)
+p=A.aB8(A.b([A.zD(q,q,q,B.I4,q,q,r.e?q:new A.amK(r,a),q,q,q,"H1-Deck hinzuf\xfcgen (eingebaut)")],t.p),!0,p)
 s=J.rM(r.d)?B.ZP:new A.Bh(A.aD7(new A.amL(r),J.au(r.d),B.H_,new A.amM(),!1),r.gaiW(),q)
 return A.aEd(p,s,new A.tN(B.I_,r.e?q:r.gaff(),B.XS,q))}}
 A.amx.prototype={
