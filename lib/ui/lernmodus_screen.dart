@@ -1,10 +1,10 @@
 // lib/screens/lernmodus_screen.dart
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/flashcard.dart';
 import 'package:flutter/services.dart';
-
 
 enum FocusFilter { all, zero, one, twoPlus }
 
@@ -28,11 +28,25 @@ class _LernmodusScreenState extends State<LernmodusScreen> {
   // Persistent progress: how often each card was answered "right".
   final Map<String, int> _correctById = {};
 
+  // Persistent favorites: cards saved for later.
+  final Set<String> _favoritesById = {};
+
+  // Persistent notes: free-form text per card.
+  final Map<String, String> _notesById = {};
+
   // Local UI state
   FocusFilter _filter = FocusFilter.all;
   bool _showFilterPanel = false;
   int _currentIndex = 0;
   bool _revealed = false;
+
+  // Favorites-only view toggle
+  bool _onlyFavorites = false;
+
+  // Order state (sorted vs random) + persistence
+  bool _randomOrder = false;
+  int _shuffleSeed = 0; // keep a stable seed during a session
+  final List<String> _orderIds = []; // current ordered ids for the visible list
 
   // Persistence helpers
   late SharedPreferences _prefs;
@@ -41,28 +55,60 @@ class _LernmodusScreenState extends State<LernmodusScreen> {
   // Use a stable key per deck/screen. Prefer deckId; fall back to title.
   String get _progressKey =>
       'lernprogress_${widget.progressKey ?? widget.title}';
+  String get _orderKey =>
+      'lernorder_${widget.progressKey ?? widget.title}';
+  String get _seedKey =>
+      'lernseed_${widget.progressKey ?? widget.title}';
+  String get _favoritesKey =>
+      'lernfavorites_${widget.progressKey ?? widget.title}';
+  String get _notesKey =>
+      'lernnotes_${widget.progressKey ?? widget.title}';
 
   // Accessors
   List<Flashcard> get _allCards => widget.cards;
   String _keyOf(Flashcard c) => c.id;
   int _correctOf(Flashcard c) => _correctById[_keyOf(c)] ?? 0;
+  bool _isFav(Flashcard c) => _favoritesById.contains(_keyOf(c));
+  String _noteOf(Flashcard c) => _notesById[_keyOf(c)] ?? '';
 
-  // Filtered view
+  // Base filtered view (without ordering)
   List<Flashcard> get _filtered {
+    Iterable<Flashcard> base;
     switch (_filter) {
       case FocusFilter.zero:
-        return _allCards.where((c) => _correctOf(c) == 0).toList();
+        base = _allCards.where((c) => _correctOf(c) == 0);
+        break;
       case FocusFilter.one:
-        return _allCards.where((c) => _correctOf(c) == 1).toList();
+        base = _allCards.where((c) => _correctOf(c) == 1);
+        break;
       case FocusFilter.twoPlus:
-        return _allCards.where((c) => _correctOf(c) >= 2).toList();
+        base = _allCards.where((c) => _correctOf(c) >= 2);
+        break;
       case FocusFilter.all:
       default:
-        return _allCards;
+        base = _allCards;
+        break;
     }
+    if (_onlyFavorites) {
+      base = base.where((c) => _isFav(c));
+    }
+    return base.toList();
   }
 
-  // Buckets for the progress bar
+  // Ordered filtered list according to _orderIds cache
+  List<Flashcard> get _ordered {
+    final byId = {for (final c in _filtered) _keyOf(c): c};
+
+    // If _orderIds is out of sync (length/contents differ), rebuild.
+    if (_orderIds.length != byId.length ||
+        !_orderIds.every(byId.containsKey)) {
+      _recomputeOrder();
+    }
+
+    return _orderIds.map((id) => byId[id]!).toList();
+  }
+
+  // Buckets for the progress bar (over entire deck, not filtered)
   ({int zero, int one, int twoPlus}) get _buckets {
     int zero = 0, one = 0, twoPlus = 0;
     for (final c in _allCards) {
@@ -111,12 +157,87 @@ class _LernmodusScreenState extends State<LernmodusScreen> {
       }
     }
 
-    setState(() => _prefsReady = true);
+    // Load order prefs
+    _randomOrder = _prefs.getBool(_orderKey) ?? false;
+    _shuffleSeed = _prefs.getInt(_seedKey) ??
+        DateTime.now().millisecondsSinceEpoch;
+
+    // Load favorites
+    final favRaw = _prefs.getString(_favoritesKey);
+    if (favRaw != null && favRaw.isNotEmpty) {
+      try {
+        final List<dynamic> arr = jsonDecode(favRaw);
+        _favoritesById
+          ..clear()
+          ..addAll(arr.map((e) => e.toString()));
+      } catch (_) {
+        // ignore malformed
+      }
+    }
+
+    // Load notes
+    final notesRaw = _prefs.getString(_notesKey);
+    if (notesRaw != null && notesRaw.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(notesRaw) as Map<String, dynamic>;
+        _notesById
+          ..clear()
+          ..addAll(decoded.map((k, v) => MapEntry(k, v.toString())));
+      } catch (_) {
+        // ignore malformed
+      }
+    }
+
+    setState(() {
+      _prefsReady = true;
+      _recomputeOrder();
+      _currentIndex = 0;
+      _revealed = false;
+    });
   }
 
   Future<void> _saveProgress() async {
-    // Persist the whole map as JSON
     await _prefs.setString(_progressKey, jsonEncode(_correctById));
+  }
+
+  Future<void> _saveOrderPrefs() async {
+    await _prefs.setBool(_orderKey, _randomOrder);
+    await _prefs.setInt(_seedKey, _shuffleSeed);
+  }
+
+  Future<void> _saveFavorites() async {
+    await _prefs.setString(_favoritesKey, jsonEncode(_favoritesById.toList()));
+  }
+
+  Future<void> _saveNotes() async {
+    await _prefs.setString(_notesKey, jsonEncode(_notesById));
+  }
+
+  // Build/refresh the _orderIds cache based on _filtered and _randomOrder
+  void _recomputeOrder() {
+    final list = _filtered;
+    final ids = list.map(_keyOf).toList();
+
+    _orderIds
+      ..clear()
+      ..addAll(ids);
+
+    if (_randomOrder) {
+      // Deterministic shuffle for a stable study order.
+      final r = Random(_shuffleSeed);
+      for (int i = _orderIds.length - 1; i > 0; i--) {
+        final j = r.nextInt(i + 1);
+        final tmp = _orderIds[i];
+        _orderIds[i] = _orderIds[j];
+        _orderIds[j] = tmp;
+      }
+    }
+    // Clamp index after reordering
+    if (_orderIds.isEmpty) {
+      _currentIndex = 0;
+    } else {
+      _currentIndex = _currentIndex.clamp(0, _orderIds.length - 1);
+    }
   }
 
   // UI actions
@@ -126,11 +247,21 @@ class _LernmodusScreenState extends State<LernmodusScreen> {
       _showFilterPanel = false;
       _currentIndex = 0;
       _revealed = false;
+      _recomputeOrder();
+    });
+  }
+
+  void _toggleFavoritesOnly(bool value) {
+    setState(() {
+      _onlyFavorites = value;
+      _currentIndex = 0;
+      _revealed = false;
+      _recomputeOrder();
     });
   }
 
   void _advanceToNext() {
-    final list = _filtered;
+    final list = _ordered;
     if (list.isEmpty) {
       setState(() {
         _currentIndex = 0;
@@ -146,22 +277,28 @@ class _LernmodusScreenState extends State<LernmodusScreen> {
 
   void _markRight() {
     if (!_revealed) return;
-    final list = _filtered;
+    final list = _ordered;
     if (list.isEmpty) return;
     final card = list[_currentIndex];
     final key = _keyOf(card);
 
     setState(() {
       _correctById[key] = (_correctById[key] ?? 0) + 1;
+      // Re-evaluate filters & order because the bucket may have changed.
+      final prevLength = _ordered.length;
+      _recomputeOrder();
 
-      // Because filter buckets can change after increment, recalc and move.
-      final after = _filtered;
-      if (after.isEmpty) {
+      if (_ordered.isEmpty) {
         _currentIndex = 0;
         _revealed = false;
       } else {
-        _currentIndex = _currentIndex.clamp(0, after.length - 1);
-        _advanceToNext();
+        // If list shrank, clamp; otherwise advance to next item.
+        _currentIndex = _currentIndex.clamp(0, _ordered.length - 1);
+        if (_ordered.length == prevLength) {
+          _advanceToNext();
+        } else {
+          _revealed = false;
+        }
       }
     });
 
@@ -178,6 +315,153 @@ class _LernmodusScreenState extends State<LernmodusScreen> {
     setState(() => _revealed = !_revealed);
   }
 
+  void _toggleRandomOrder(bool value) {
+    setState(() {
+      _randomOrder = value;
+      // New seed when enabling random to reshuffle;
+      // keep the existing seed when disabling (for later re-enable).
+      if (_randomOrder) {
+        _shuffleSeed = DateTime.now().millisecondsSinceEpoch;
+      }
+      _currentIndex = 0;
+      _revealed = false;
+      _recomputeOrder();
+    });
+    _saveOrderPrefs();
+  }
+
+  void _toggleFavorite(Flashcard c) {
+    final id = _keyOf(c);
+    setState(() {
+      if (_favoritesById.contains(id)) {
+        _favoritesById.remove(id);
+      } else {
+        _favoritesById.add(id);
+      }
+      // If we are in favorites-only mode and we un-favorite current,
+      // we need to recompute and clamp/advance.
+      final wasOnlyFav = _onlyFavorites;
+      final prevLen = _ordered.length;
+      _recomputeOrder();
+      if (wasOnlyFav) {
+        if (_ordered.isEmpty) {
+          _currentIndex = 0;
+          _revealed = false;
+        } else {
+          _currentIndex = _currentIndex.clamp(0, _ordered.length - 1);
+          if (_ordered.length == prevLen) {
+            // keep current index
+          } else {
+            _revealed = false;
+          }
+        }
+      }
+    });
+    _saveFavorites();
+  }
+
+  Future<void> _editNote(Flashcard c) async {
+    final id = _keyOf(c);
+    final controller = TextEditingController(text: _notesById[id] ?? '');
+    final result = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      showDragHandle: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) {
+        final bottomInset = MediaQuery.of(ctx).viewInsets.bottom;
+        return Padding(
+          padding: EdgeInsets.only(
+            left: 16,
+            right: 16,
+            bottom: bottomInset + 16,
+            top: 8,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.edit_note_rounded),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Notiz zur Karte',
+                      style: Theme.of(ctx).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
+                    ),
+                  ),
+                  TextButton.icon(
+                    onPressed: () {
+                      controller.clear();
+                    },
+                    icon: const Icon(Icons.delete_outline),
+                    label: const Text('Leeren'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: controller,
+                maxLines: null,
+                minLines: 4,
+                autofocus: true,
+                textInputAction: TextInputAction.newline,
+                decoration: InputDecoration(
+                  hintText: 'Schreibe deine Gedanken, Eselsbrücken oder Links…',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () => Navigator.of(ctx).pop(null),
+                      icon: const Icon(Icons.close),
+                      label: const Text('Abbrechen'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: () =>
+                          Navigator.of(ctx).pop(controller.text.trim()),
+                      icon: const Icon(Icons.save_rounded),
+                      label: const Text('Speichern'),
+                      style: ElevatedButton.styleFrom(
+                        minimumSize: const Size.fromHeight(48),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (result != null) {
+      setState(() {
+        if (result.isEmpty) {
+          _notesById.remove(id);
+        } else {
+          _notesById[id] = result;
+        }
+      });
+      await _saveNotes();
+      HapticFeedback.selectionClick();
+    }
+  }
+
   Color _bucketColor(int correct) {
     if (correct >= 2) return Colors.green;
     if (correct == 1) return Colors.orange;
@@ -188,9 +472,12 @@ class _LernmodusScreenState extends State<LernmodusScreen> {
   Widget _buildCard(Flashcard c) {
     final correct = _correctOf(c);
     final borderColor = _bucketColor(correct);
+    final fav = _isFav(c);
+    final note = _noteOf(c);
 
-    final list = _filtered;
-    final key = ValueKey('card_${_keyOf(c)}_${_currentIndex}_${_revealed ? 1 : 0}');
+    final list = _ordered;
+    final key = ValueKey(
+        'card_${_keyOf(c)}_${_currentIndex}_${_revealed ? 1 : 0}_${_randomOrder ? 1 : 0}_${fav ? 1 : 0}_${note.isNotEmpty ? 1 : 0}');
 
     return Dismissible(
       key: key,
@@ -229,6 +516,7 @@ class _LernmodusScreenState extends State<LernmodusScreen> {
       child: InkWell(
         borderRadius: BorderRadius.circular(18),
         onTap: _toggleReveal,
+        onLongPress: () => _editNote(c), // quick access to notes
         child: Container(
           decoration: BoxDecoration(
             gradient: LinearGradient(
@@ -251,87 +539,167 @@ class _LernmodusScreenState extends State<LernmodusScreen> {
           ),
           child: Padding(
             padding: const EdgeInsets.all(20),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            child: Stack(
               children: [
-                if ((c.number ?? '').isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 6),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.confirmation_number, size: 16),
-                        const SizedBox(width: 6),
-                        Text(
-                          c.number!,
-                          style: TextStyle(
-                            fontWeight: FontWeight.w600,
-                            fontSize: 13,
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onSurface
-                                .withOpacity(0.7),
-                          ),
+                // Main content column
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if ((c.number ?? '').isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6, right: 64),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.confirmation_number, size: 16),
+                            const SizedBox(width: 6),
+                            Text(
+                              c.number!,
+                              style: TextStyle(
+                                fontWeight: FontWeight.w600,
+                                fontSize: 13,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurface
+                                    .withOpacity(0.7),
+                              ),
+                            ),
+                          ],
                         ),
-                      ],
-                    ),
-                  ),
-                Text(
-                  c.question,
-                  style: const TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.w800,
-                    height: 1.2,
-                  ),
-                ),
-                const SizedBox(height: 14),
-                Divider(
-                  height: 1,
-                  color: Theme.of(context)
-                      .colorScheme
-                      .outline
-                      .withOpacity(0.25),
-                ),
-                const SizedBox(height: 10),
-                AnimatedCrossFade(
-                  duration: const Duration(milliseconds: 200),
-                  crossFadeState: _revealed
-                      ? CrossFadeState.showFirst
-                      : CrossFadeState.showSecond,
-                  firstChild: Text(
-                    c.answer,
-                    style: const TextStyle(fontSize: 18, height: 1.35),
-                  ),
-                  secondChild: Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(
-                        vertical: 16, horizontal: 12),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: Theme.of(context)
-                            .colorScheme
-                            .outline
-                            .withOpacity(0.35),
+                      ),
+                    Text(
+                      c.question,
+                      style: const TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w800,
+                        height: 1.2,
                       ),
                     ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(Icons.touch_app, size: 18),
-                        const SizedBox(width: 8),
-                        Text(
-                          'Tippe, um die Antwort anzuzeigen',
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontStyle: FontStyle.italic,
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onSurface
-                                .withOpacity(0.65),
-                          ),
-                        ),
-                      ],
+                    const SizedBox(height: 14),
+                    Divider(
+                      height: 1,
+                      color: Theme.of(context)
+                          .colorScheme
+                          .outline
+                          .withOpacity(0.25),
                     ),
+                    const SizedBox(height: 10),
+                    AnimatedCrossFade(
+                      duration: const Duration(milliseconds: 200),
+                      crossFadeState: _revealed
+                          ? CrossFadeState.showFirst
+                          : CrossFadeState.showSecond,
+                      firstChild: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            c.answer,
+                            style: const TextStyle(fontSize: 18, height: 1.35),
+                          ),
+                          if (note.isNotEmpty) ...[
+                            const SizedBox(height: 12),
+                            _NotePreview(
+                              text: note,
+                              onTap: () => _editNote(c),
+                            ),
+                          ],
+                        ],
+                      ),
+                      secondChild: Column(
+                        children: [
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.symmetric(
+                                vertical: 16, horizontal: 12),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .outline
+                                    .withOpacity(0.35),
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const Icon(Icons.touch_app, size: 18),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'Tippe, um die Antwort anzuzeigen',
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontStyle: FontStyle.italic,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurface
+                                        .withOpacity(0.65),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (note.isNotEmpty) ...[
+                            const SizedBox(height: 12),
+                            _NotePreview(
+                              text: note,
+                              onTap: () => _editNote(c),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                // Top-right action buttons: favorite + note
+                Positioned(
+                  right: 0,
+                  top: 0,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        splashRadius: 24,
+                        tooltip: 'Notiz bearbeiten',
+                        onPressed: () {
+                          HapticFeedback.selectionClick();
+                          _editNote(c);
+                        },
+                        icon: Icon(
+                          _noteOf(c).isNotEmpty
+                              ? Icons.edit_note_rounded
+                              : Icons.note_add_outlined,
+                          size: 26,
+                          color: _noteOf(c).isNotEmpty
+                              ? Theme.of(context).colorScheme.primary
+                              : Theme.of(context)
+                                  .colorScheme
+                                  .onSurface
+                                  .withOpacity(0.6),
+                        ),
+                      ),
+                      IconButton(
+                        splashRadius: 24,
+                        tooltip:
+                            fav ? 'Aus Favoriten entfernen' : 'Zu Favoriten',
+                        onPressed: () {
+                          HapticFeedback.selectionClick();
+                          _toggleFavorite(c);
+                        },
+                        icon: Icon(
+                          fav
+                              ? Icons.star_rounded
+                              : Icons.star_border_rounded,
+                          size: 26,
+                          color: fav
+                              ? Colors.amber
+                              : Theme.of(context)
+                                  .colorScheme
+                                  .onSurface
+                                  .withOpacity(0.6),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ],
@@ -345,6 +713,8 @@ class _LernmodusScreenState extends State<LernmodusScreen> {
   Widget _buildProgressBar() {
     final total = _allCards.length;
     final b = _buckets;
+    final favCount = _favoritesById.length;
+    final notesCount = _notesById.values.where((t) => t.trim().isNotEmpty).length;
 
     double f(int n) => total == 0 ? 0 : n / total;
 
@@ -389,7 +759,7 @@ class _LernmodusScreenState extends State<LernmodusScreen> {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text(
-                      'Gesamt: $total',
+                      'Gesamt: $total  •  Favoriten: $favCount  •  Notizen: $notesCount',
                       style: TextStyle(
                         color: Theme.of(context)
                             .colorScheme
@@ -397,9 +767,21 @@ class _LernmodusScreenState extends State<LernmodusScreen> {
                             .withOpacity(0.7),
                       ),
                     ),
-                    Icon(
-                      _showFilterPanel ? Icons.expand_less : Icons.expand_more,
-                      size: 20,
+                    Row(
+                      children: [
+                        const Icon(Icons.shuffle, size: 18),
+                        const SizedBox(width: 6),
+                        Text(
+                          _randomOrder ? 'Zufällig' : 'Sortiert',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w600,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurface
+                                .withOpacity(0.8),
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
@@ -414,17 +796,64 @@ class _LernmodusScreenState extends State<LernmodusScreen> {
               : CrossFadeState.showSecond,
           firstChild: Padding(
             padding: const EdgeInsets.only(top: 8),
-            child: Wrap(
-              spacing: 8,
+            child: Column(
               children: [
-                _filterChip('Alle ($total)', FocusFilter.all,
-                    selected: _filter == FocusFilter.all, color: Colors.blue),
-                _filterChip('0× (${b.zero})', FocusFilter.zero,
-                    selected: _filter == FocusFilter.zero, color: Colors.red),
-                _filterChip('1× (${b.one})', FocusFilter.one,
-                    selected: _filter == FocusFilter.one, color: Colors.orange),
-                _filterChip('2+× (${b.twoPlus})', FocusFilter.twoPlus,
-                    selected: _filter == FocusFilter.twoPlus, color: Colors.green),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    _filterChip('Alle ($total)', FocusFilter.all,
+                        selected: _filter == FocusFilter.all, color: Colors.blue),
+                    _filterChip('0× (${b.zero})', FocusFilter.zero,
+                        selected: _filter == FocusFilter.zero, color: Colors.red),
+                    _filterChip('1× (${b.one})', FocusFilter.one,
+                        selected: _filter == FocusFilter.one, color: Colors.orange),
+                    _filterChip('2+× (${b.twoPlus})', FocusFilter.twoPlus,
+                        selected: _filter == FocusFilter.twoPlus, color: Colors.green),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                // The order switch
+                SwitchListTile.adaptive(
+                  value: _randomOrder,
+                  onChanged: _toggleRandomOrder,
+                  secondary: const Icon(Icons.shuffle),
+                  title: const Text(
+                    'Zufällige Reihenfolge',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  subtitle: Text(
+                    _randomOrder
+                        ? 'Karten werden in zufälliger, stabiler Reihenfolge angezeigt.'
+                        : 'Karten folgen der sortierten Reihenfolge.',
+                    style: TextStyle(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withOpacity(0.8),
+                    ),
+                  ),
+                  contentPadding: EdgeInsets.zero,
+                ),
+                // Favorites-only switch
+                SwitchListTile.adaptive(
+                  value: _onlyFavorites,
+                  onChanged: _toggleFavoritesOnly,
+                  secondary: const Icon(Icons.star_rounded),
+                  title: const Text(
+                    'Nur Favoriten anzeigen',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  subtitle: Text(
+                    'Zeigt nur Karten, die du gespeichert hast.',
+                    style: TextStyle(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withOpacity(0.8),
+                    ),
+                  ),
+                  contentPadding: EdgeInsets.zero,
+                ),
               ],
             ),
           ),
@@ -539,7 +968,7 @@ class _LernmodusScreenState extends State<LernmodusScreen> {
       );
     }
 
-    final list = _filtered;
+    final list = _ordered;
     final current =
         list.isNotEmpty ? list[_currentIndex.clamp(0, list.length - 1)] : null;
 
@@ -592,6 +1021,48 @@ class _SegmentBarPortion extends StatelessWidget {
             fontSize: 12,
             fontWeight: FontWeight.w700,
             color: color,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _NotePreview extends StatelessWidget {
+  const _NotePreview({
+    required this.text,
+    required this.onTap,
+  });
+
+  final String text;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final preview = text.split('\n').first.trim();
+    return Material(
+      color: Theme.of(context).colorScheme.secondaryContainer.withOpacity(0.4),
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
+          child: Row(
+            children: [
+              const Icon(Icons.sticky_note_2_outlined, size: 18),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  preview.isEmpty ? '(Notiz bearbeiten …)' : preview,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 13, fontStyle: FontStyle.italic),
+                ),
+              ),
+              const SizedBox(width: 6),
+              const Icon(Icons.edit_outlined, size: 16),
+            ],
           ),
         ),
       ),
