@@ -11,6 +11,7 @@ import '../services/storage_service.dart';
 import './widgets/progress_dialog.dart';
 import 'lernmodus_screen.dart';
 
+// ⬇️ WICHTIG: den eingebauten Installer hier importieren
 import '../services/builtin_h1.dart';
 
 /// --- helper: de-dupe by flashcard.id ---
@@ -54,7 +55,7 @@ class _DecksScreenState extends State<DecksScreen> {
       final result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: const ['pdf'],
-        withData: false, // IMPORTANT: don't hold entire file in memory
+        withData: false, // keep memory usage low
         allowMultiple: false,
       );
       if (!mounted) return;
@@ -67,7 +68,7 @@ class _DecksScreenState extends State<DecksScreen> {
       final title = (file.name).replaceAll(RegExp(r'\.pdf$', caseSensitive: false), '').trim();
       final stopwatch = Stopwatch()..start();
 
-      // Stream to disk, don’t collect in memory
+      // Web-tauglicher Writer (in Memory → SharedPreferences)
       final writer = await StreamingDeckWriter.begin(
         title: title.isEmpty ? 'Karteikarten' : title,
         sourceName: file.name,
@@ -78,13 +79,13 @@ class _DecksScreenState extends State<DecksScreen> {
         barrierDismissible: false,
         builder: (dialogContext) {
           return StreamBuilder<ProgressUpdate>(
-            stream: PdfParser.parseWithProgress(file, debug: false), // keep debug off to save RAM
+            stream: PdfParser.parseWithProgress(file, debug: false),
             builder: (ctx, snapshot) {
               final d = snapshot.data;
 
               if (d != null) {
                 if (d.cards != null && d.cards!.isNotEmpty) {
-                  writer.appendCards(d.cards!); // stream to disk
+                  writer.appendCards(d.cards!);
                 }
                 if (d.unmatched != null && d.unmatched!.isNotEmpty) {
                   writer.appendNotes(d.unmatched!);
@@ -287,26 +288,28 @@ class _DecksScreenState extends State<DecksScreen> {
         ),
         actions: [
           IconButton(
-            tooltip: 'H1-Deck hinzufügen',
+            tooltip: 'H1-Deck hinzufügen (eingebaut)',
             icon: const Icon(Icons.flash_on),
-            onPressed: _busy ? null : () async {
-              setState(() => _busy = true);
-              try {
-                final (cards, notes) = await installH1FullDeck();
-                await _reload();
-                if (!mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Deck gespeichert ($cards Karten, $notes Notizen).')),
-                );
-              } catch (e) {
-                if (!mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Installieren fehlgeschlagen: $e')),
-                );
-              } finally {
-                if (mounted) setState(() => _busy = false);
-              }
-            },
+            onPressed: _busy
+                ? null
+                : () async {
+                    setState(() => _busy = true);
+                    try {
+                      final (cards, notes) = await installH1FullDeck();
+                      await _reload();
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Deck gespeichert ($cards Karten, $notes Notizen).')),
+                      );
+                    } catch (e) {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Installieren fehlgeschlagen: $e')),
+                      );
+                    } finally {
+                      if (mounted) setState(() => _busy = false);
+                    }
+                  },
           ),
         ],
       ),

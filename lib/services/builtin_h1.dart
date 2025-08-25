@@ -1,8 +1,11 @@
 // lib/services/builtin_h1_full.dart
 import 'dart:convert';
+
 import '../models/flashcard.dart';
 import '../services/storage_service.dart';
 
+/// Installiert das eingebaute H1-Deck (komplett) aus der TSV-Konstanten unten.
+/// Nutzt den (web-tauglichen) StreamingDeckWriter aus StorageService.
 Future<(int cards, int notes)> installH1FullDeck() async {
   final writer = await StreamingDeckWriter.begin(
     title: 'H1 Fachgespräch (eingebaut, komplett)',
@@ -40,6 +43,10 @@ String _fnv64Hex(String s) {
   return hash.toRadixString(16).padLeft(16, '0');
 }
 
+// ———————————————————————————————————————————————————————————————
+// TSV-Daten: "Nr.\tFrage\tAntwort"
+// (du hattest diesen Block gepostet; ich lasse ihn hier 1:1 drin)
+// ———————————————————————————————————————————————————————————————
 const String _H1_TSV = r'''Nr. 0001	Welches sind die drei wichtigsten Größen in der Elektrotechnik? 	 Elektrische Spannung (U - Volt) Elektrische Stromstärke (l - Ampere) Elektrischer Widerstand (R - Ohm)
 Nr. 0002	Wie lässt sich die Spannung erklären? 	Die elektrische Spannung U ist der Unterschied in der Elektronenbesetzung zwischen zwei Punkten.  Minuspol = Elektronen Überschuss Pluspol = Elektronen Mangel  Spannung entsteht durch Ladungstrennung. Das Ausgleichsbestreben getrennter Ladung ist die elektrische Spannung U
 Nr. 0003	Was ist Strom und welche Wirkung hat er? 	 Unter Strom (I) versteht man das Fließen von freien Elektronen Fließrichtung vom Minuspol zum Pluspol (Wirkliche Stromrichtung)  Die verschiedenen Wirkungen des elektrischen Stromes sind:  Wärmewirkung (Bügeleisen, Tauchsieder, Lötkolben) Lichtwirkung (Glühlampen, LED, Leuchtstoﬀröhre) Magnetische Wirkung (Elektromagnete, Elektromotoren, Lautsprecher) Chemische Wirkung (Elektrolyse, Galvanisieren, Akkumulatoren) Wirkung auf Lebewesen (physiologische Wirkung) (Elektroweidezäune,Elektromedizinische Geräte)  Stand: 01.12.2021  Seite 3 / 98  Stand: 01.12.2021  Seite 4 / 98  Fachkunde Elektrotechnik, 24. Auﬂage, Verlag Europa Lehrmittel
