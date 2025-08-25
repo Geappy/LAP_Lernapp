@@ -7,8 +7,6 @@ import 'package:file_selector/file_selector.dart';
 import '../models/flashcard.dart';
 import 'lernmodus_screen.dart';
 
-/// Eine Import-Seite, die JSON-Decks lädt (Web/Android/iOS/Desktop).
-/// Benötigt: `file_selector` (flutter pub add file_selector)
 class ImportScreen extends StatefulWidget {
   const ImportScreen({super.key});
 
@@ -90,18 +88,13 @@ class _ImportScreenState extends State<ImportScreen> {
     try {
       final decoded = jsonDecode(text);
 
-      // akzeptiere zwei Formen:
-      // 1) { "title": "Deckname", "cards": [ {...}, ... ] }
-      // 2) [ {...}, {...}, ... ]  (nur Karten)
       String? titleFromJson;
       List<dynamic> rawCards;
 
       if (decoded is Map<String, dynamic>) {
         titleFromJson = (decoded['title'] ?? decoded['name'] ?? '').toString().trim();
         final cardsAny = decoded['cards'] ?? decoded['flashcards'] ?? decoded['items'];
-        if (cardsAny is! List) {
-          throw const FormatException('Erwarte Feld "cards" als Liste.');
-        }
+        if (cardsAny is! List) throw const FormatException('Erwarte Feld "cards" als Liste.');
         rawCards = cardsAny;
       } else if (decoded is List) {
         rawCards = decoded;
@@ -111,17 +104,10 @@ class _ImportScreenState extends State<ImportScreen> {
 
       final cards = <Flashcard>[];
       for (final item in rawCards) {
-        if (item is! Map) {
-          // Versuche tolerant zu sein – aber nur Maps sind sinnvoll.
-          continue;
-        }
-        // Erwartet: Flashcard.fromJson(Map<String, dynamic>)
+        if (item is! Map) continue;
         cards.add(Flashcard.fromJson(Map<String, dynamic>.from(item)));
       }
-
-      if (cards.isEmpty) {
-        throw const FormatException('Keine Karten gefunden.');
-      }
+      if (cards.isEmpty) throw const FormatException('Keine Karten gefunden.');
 
       setState(() {
         _parsed = cards;
@@ -157,7 +143,7 @@ class _ImportScreenState extends State<ImportScreen> {
         builder: (_) => LernmodusScreen(
           cards: _parsed,
           title: _deckTitle,
-          progressKey: _deckTitle, // stabiler Key pro Deck-Name
+          progressKey: _deckTitle,
         ),
       ),
     );
@@ -188,7 +174,6 @@ class _ImportScreenState extends State<ImportScreen> {
       );
     }
 
-    // Zeige eine kurze Vorschau von 3 Karten
     final preview = _parsed.take(3).toList();
 
     return Container(
@@ -239,9 +224,7 @@ class _ImportScreenState extends State<ImportScreen> {
     final isWeb = kIsWeb;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Deck importieren'),
-      ),
+      appBar: AppBar(title: const Text('Deck importieren')),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Center(

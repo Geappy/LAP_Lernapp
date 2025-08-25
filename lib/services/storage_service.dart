@@ -1,8 +1,9 @@
 // lib/services/storage_service.dart
 import 'dart:convert';
-import 'dart:io';
+// Wichtig: KEIN dart:io und KEIN path_provider hier – das bricht auf Web!
+// import 'dart:io';
+// import 'package:path_provider/path_provider.dart';
 
-import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/deck.dart';
@@ -134,24 +135,24 @@ class StorageService {
   }
 }
 
-/// Streaming writer that keeps file sinks open during import to avoid
-/// memory spikes. At finish(), it loads the NDJSON files and writes
-/// the final deck into SharedPreferences (so your UI finds it as before).
+///
+/// Web-sichere Streaming-Variante ohne Dateien:
+/// - sammelt Karten/Notizen im Speicher
+/// - schreibt am Ende das komplette Deck in SharedPreferences
+///
+/// API kompatibel zu deiner bisherigen Nutzung.
+///
 class StreamingDeckWriter {
   final String title;
   final String? sourceName;
   final String deckId;
 
-  late final Directory _tmpDir;
-  late final File _cardsNdjson;
-  late final File _notesNdjson;
-
-  IOSink? _cardsSink;
-  IOSink? _notesSink;
+  final List<Flashcard> _cards = [];
+  final List<Unmatched> _notes = [];
 
   bool _finished = false;
   int _count = 0;
-  int _notes = 0;
+  int _notesCount = 0;
 
   StreamingDeckWriter._(this.title, this.sourceName, this.deckId);
 
@@ -159,117 +160,39 @@ class StreamingDeckWriter {
     required String title,
     String? sourceName,
   }) async {
-    final dir = await getApplicationDocumentsDirectory();
     final ts = DateTime.now().millisecondsSinceEpoch;
     final deckId = 'deck_$ts';
-
-    final w = StreamingDeckWriter._(title, sourceName, deckId);
-    w._tmpDir = Directory('${dir.path}/stream_$deckId')..createSync(recursive: true);
-    w._cardsNdjson = File('${w._tmpDir.path}/cards.ndjson')..createSync(recursive: true);
-    w._notesNdjson = File('${w._tmpDir.path}/notes.ndjson')..createSync(recursive: true);
-
-    // open once & keep open
-    w._cardsSink = w._cardsNdjson.openWrite(mode: FileMode.writeOnlyAppend);
-    w._notesSink = w._notesNdjson.openWrite(mode: FileMode.writeOnlyAppend);
-    return w;
+    return StreamingDeckWriter._(title, sourceName, deckId);
   }
 
   void appendCards(List<Flashcard> cards) {
     if (_finished || cards.isEmpty) return;
-    final s = _cardsSink;
-    if (s == null) return;
-    for (final c in cards) {
-      s.writeln(jsonEncode({
-        'id': c.id,
-        'question': c.question,
-        'answer': c.answer,
-        'number': c.number,
-      }));
-      _count++;
-    }
+    _cards.addAll(cards);
+    _count += cards.length;
   }
 
   void appendNotes(List<Unmatched> notes) {
     if (_finished || notes.isEmpty) return;
-    final s = _notesSink;
-    if (s == null) return;
-    for (final n in notes) {
-      s.writeln(jsonEncode({
-        'page': n.page,
-        'reason': n.reason,
-        'text': n.text,
-      }));
-      _notes++;
-    }
+    _notes.addAll(notes);
+    _notesCount += notes.length;
   }
 
   /// Finalize:
-  /// - close sinks
-  /// - stream-read NDJSON → build lists
   /// - save via StorageService.saveDeck (SharedPreferences)
-  /// - cleanup temp files
   Future<String> finish() async {
     if (_finished) return deckId;
     _finished = true;
 
-    await _cardsSink?.flush();
-    await _notesSink?.flush();
-    await _cardsSink?.close();
-    await _notesSink?.close();
-    _cardsSink = null;
-    _notesSink = null;
-
-    // stream-read into objects (deck needs full list for SharedPrefs)
-    final cards = <Flashcard>[];
-    final notes = <Unmatched>[];
-
-    if (_cardsNdjson.existsSync()) {
-      final stream = _cardsNdjson.openRead().transform(utf8.decoder).transform(const LineSplitter());
-      await for (final line in stream) {
-        final ln = line.trim();
-        if (ln.isEmpty) continue;
-        final m = jsonDecode(ln) as Map<String, dynamic>;
-        cards.add(Flashcard(
-          id: m['id'] as String,
-          question: m['question'] as String,
-          answer: m['answer'] as String,
-          number: m['number'] as String?,
-        ));
-      }
-    }
-
-    if (_notesNdjson.existsSync()) {
-      final stream = _notesNdjson.openRead().transform(utf8.decoder).transform(const LineSplitter());
-      await for (final line in stream) {
-        final ln = line.trim();
-        if (ln.isEmpty) continue;
-        final m = jsonDecode(ln) as Map<String, dynamic>;
-        notes.add(Unmatched(
-          page: (m['page'] as num?)?.toInt() ?? 0,
-          reason: m['reason'] as String? ?? '',
-          text: m['text'] as String? ?? '',
-        ));
-      }
-    }
-
-    // Save to SharedPreferences so the rest of the app sees it
     final savedId = await StorageService.saveDeck(
       title: title,
-      cards: cards,
+      cards: _cards,
       sourceName: sourceName,
-      unmatched: notes,
+      unmatched: _notes,
     );
-
-    // cleanup temp
-    try {
-      _cardsNdjson.deleteSync();
-      _notesNdjson.deleteSync();
-      _tmpDir.deleteSync(recursive: true);
-    } catch (_) {}
 
     return savedId;
   }
 
   int get cardCount => _count;
-  int get unmatchedCount => _notes;
+  int get unmatchedCount => _notesCount;
 }
