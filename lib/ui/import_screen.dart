@@ -88,7 +88,7 @@ class _ImportScreenState extends State<ImportScreen> {
       final result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: const ['pdf'],
-        withData: true,
+        withData: false,
       );
 
       if (!mounted) return;
@@ -103,57 +103,55 @@ class _ImportScreenState extends State<ImportScreen> {
 
       final rootContext = context;
       final stopwatch = Stopwatch()..start();
-      final List<Flashcard> collected = [];
+
+      // NEW: stream to disk
+      final writer = await StreamingDeckWriter.begin(
+        title: _basenameNoExt(_sourceName!),
+        sourceName: _sourceName!,
+      );
 
       await showDialog<void>(
         context: rootContext,
         barrierDismissible: false,
         builder: (dialogContext) {
           return StreamBuilder<ProgressUpdate>(
-            stream: PdfParser.parseWithProgress(file),
+            stream: PdfParser.parseWithProgress(file, debug: false),
             builder: (ctx, snapshot) {
-              final data = snapshot.data;
+              final d = snapshot.data;
 
-              // keep de-duped collection no matter how the parser emits
-              final seen = collected.map((c) => c.id).toSet();
-
-              if (data?.cards != null && data!.cards!.isNotEmpty) {
-                if (data.done) {
-                  // final full batch: replace with de-duped list
-                  collected
-                    ..clear()
-                    ..addAll(_dedupeById(data.cards!));
-                } else {
-                  // per-card emission: append unique only
-                  for (final c in data.cards!) {
-                    if (seen.add(c.id)) collected.add(c);
-                  }
-                  if (collected.length % 10 == 0) {
-                    // ignore: avoid_print
-                    print('… bisher ${collected.length} Karten gesammelt');
-                  }
-                }
+              if (d?.cards != null && d!.cards!.isNotEmpty) {
+                // write to disk immediately to keep RAM low
+                writer.appendCards(d.cards!);
               }
-
-              if (data?.done == true) {
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  _handleParsingDone(
-                    rootContext: rootContext,
-                    cards: _dedupeById(collected), // safety
-                    sourceName: _sourceName ?? 'Deck',
-                  );
+              if (d?.unmatched != null && d!.unmatched!.isNotEmpty) {
+                writer.appendNotes(d.unmatched!);
+              }
+              if (d?.done == true) {
+                WidgetsBinding.instance.addPostFrameCallback((_) async {
+                  if (!mounted) return;
+                  Navigator.of(dialogContext).pop();
+                  try {
+                    await writer.finish();
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(rootContext).showSnackBar(
+                      SnackBar(content: Text('Gespeichert: "${_basenameNoExt(_sourceName!)}" (${writer.cardCount} Karten)')),
+                    );
+                    Navigator.of(rootContext).pop(true);
+                  } catch (e) {
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(rootContext).showSnackBar(
+                      SnackBar(content: Text('Speichern fehlgeschlagen: $e')),
+                    );
+                  }
                 });
               }
 
-              final current = data?.current ?? 0;
-              final total = data?.total ?? 1;
-
               return ProgressDialog(
-                current: current,
-                total: total,
+                current: d?.current ?? 0,
+                total: d?.total ?? 1,
                 elapsed: stopwatch.elapsed,
-                snippet: data?.snippet,
-                debugMessage: data?.debugMessage,
+                snippet: d?.snippet,
+                debugMessage: d?.debugMessage,
               );
             },
           );

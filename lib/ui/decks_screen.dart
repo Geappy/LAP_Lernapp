@@ -11,6 +11,8 @@ import '../services/storage_service.dart';
 import './widgets/progress_dialog.dart';
 import 'lernmodus_screen.dart';
 
+import '../services/builtin_h1.dart';
+
 /// --- helper: de-dupe by flashcard.id ---
 List<Flashcard> _dedupeById(List<Flashcard> list) {
   final seen = <String>{};
@@ -52,7 +54,8 @@ class _DecksScreenState extends State<DecksScreen> {
       final result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: const ['pdf'],
-        withData: true,
+        withData: false, // IMPORTANT: don't hold entire file in memory
+        allowMultiple: false,
       );
       if (!mounted) return;
       if (result == null) {
@@ -61,60 +64,43 @@ class _DecksScreenState extends State<DecksScreen> {
       }
 
       final file = result.files.single;
-      final title = (file.name)
-          .replaceAll(RegExp(r'\.pdf$', caseSensitive: false), '')
-          .trim();
-
+      final title = (file.name).replaceAll(RegExp(r'\.pdf$', caseSensitive: false), '').trim();
       final stopwatch = Stopwatch()..start();
-      final collected = <Flashcard>[];
-      final unmatched = <Unmatched>[];
+
+      // Stream to disk, don’t collect in memory
+      final writer = await StreamingDeckWriter.begin(
+        title: title.isEmpty ? 'Karteikarten' : title,
+        sourceName: file.name,
+      );
 
       await showDialog<void>(
         context: context,
         barrierDismissible: false,
         builder: (dialogContext) {
           return StreamBuilder<ProgressUpdate>(
-            stream: PdfParser.parseWithProgress(file),
-            builder: (_, snap) {
-              final data = snap.data;
+            stream: PdfParser.parseWithProgress(file, debug: false), // keep debug off to save RAM
+            builder: (ctx, snapshot) {
+              final d = snapshot.data;
 
-              if (data != null) {
-                final seen = collected.map((c) => c.id).toSet();
-
-                // bei finaler Lieferung ganze Batch übernehmen
-                if (data.done && data.cards != null && data.cards!.isNotEmpty) {
-                  collected
-                    ..clear()
-                    ..addAll(_dedupeById(data.cards!));
-                } else if (data.cards != null && data.cards!.isNotEmpty) {
-                  for (final c in data.cards!) {
-                    if (seen.add(c.id)) collected.add(c);
-                  }
+              if (d != null) {
+                if (d.cards != null && d.cards!.isNotEmpty) {
+                  writer.appendCards(d.cards!); // stream to disk
                 }
-
-                if (data.unmatched != null && data.unmatched!.isNotEmpty) {
-                  unmatched.addAll(data.unmatched!);
+                if (d.unmatched != null && d.unmatched!.isNotEmpty) {
+                  writer.appendNotes(d.unmatched!);
                 }
-
-                if (data.done) {
+                if (d.done) {
                   WidgetsBinding.instance.addPostFrameCallback((_) async {
                     if (!mounted) return;
                     Navigator.of(dialogContext).pop();
-                    stopwatch.stop();
-
                     try {
-                      await StorageService.saveDeck(
-                        title: title.isEmpty ? 'Karteikarten' : title,
-                        cards: _dedupeById(collected),
-                        sourceName: file.name,
-                        unmatched: unmatched,
-                      );
+                      await writer.finish();
                       await _reload();
                       if (!mounted) return;
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
                           content: Text(
-                            'Deck gespeichert (${_dedupeById(collected).length} Karten, ${unmatched.length} Notizen).',
+                            'Deck gespeichert (${writer.cardCount} Karten, ${writer.unmatchedCount} Notizen).',
                           ),
                         ),
                       );
@@ -129,11 +115,11 @@ class _DecksScreenState extends State<DecksScreen> {
               }
 
               return ProgressDialog(
-                current: data?.current ?? 0,
-                total: data?.total ?? 1,
+                current: d?.current ?? 0,
+                total: d?.total ?? 1,
                 elapsed: stopwatch.elapsed,
-                snippet: data?.snippet,
-                debugMessage: data?.debugMessage,
+                snippet: d?.snippet,
+                debugMessage: d?.debugMessage,
               );
             },
           );
@@ -290,7 +276,6 @@ class _DecksScreenState extends State<DecksScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      // Schlichter, schöner AppBar ohne Optionen
       appBar: AppBar(
         centerTitle: true,
         title: Text(
@@ -300,10 +285,34 @@ class _DecksScreenState extends State<DecksScreen> {
                 letterSpacing: 0.2,
               ),
         ),
+        actions: [
+          IconButton(
+            tooltip: 'H1-Deck hinzufügen',
+            icon: const Icon(Icons.flash_on),
+            onPressed: _busy ? null : () async {
+              setState(() => _busy = true);
+              try {
+                final (cards, notes) = await installH1FullDeck();
+                await _reload();
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Deck gespeichert ($cards Karten, $notes Notizen).')),
+                );
+              } catch (e) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Installieren fehlgeschlagen: $e')),
+                );
+              } finally {
+                if (mounted) setState(() => _busy = false);
+              }
+            },
+          ),
+        ],
       ),
 
       body: _decks.isEmpty
-          ? const _EmptyState() // kein zweiter Import-Button hier
+          ? const _EmptyState()
           : RefreshIndicator(
               onRefresh: _reload,
               child: ListView.separated(
@@ -324,7 +333,6 @@ class _DecksScreenState extends State<DecksScreen> {
               ),
             ),
 
-      // Nur EIN Import-Button (FAB)
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _busy ? null : _importPdf,
         icon: const Icon(Icons.upload_file),
@@ -411,7 +419,6 @@ class _DeckCard extends StatelessWidget {
           padding: const EdgeInsets.all(14),
           child: Row(
             children: [
-              // Leading bubble
               Container(
                 width: 46,
                 height: 46,
@@ -429,7 +436,6 @@ class _DeckCard extends StatelessWidget {
               ),
               const SizedBox(width: 14),
 
-              // Title + meta
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -466,7 +472,6 @@ class _DeckCard extends StatelessWidget {
                 ),
               ),
 
-              // Per-card menu (Details/Umbenennen/Löschen bleiben sinnvoll)
               PopupMenuButton<String>(
                 onSelected: (v) {
                   if (v == 'details') onDetails();
@@ -513,7 +518,6 @@ class _DeckCard extends StatelessWidget {
     );
   }
 
-  // kleine Tonal-Chips
   Widget _chip(BuildContext context,
       {required IconData icon,
       required String label,
