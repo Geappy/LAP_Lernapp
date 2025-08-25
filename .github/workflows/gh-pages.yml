@@ -1,13 +1,16 @@
 name: Deploy Flutter Web to GitHub Pages
 
+# >>> NEU <<<
+permissions:
+  contents: write
+
 on:
   push:
-    branches: [ main ]   # oder 'master', je nachdem wie dein Hauptbranch heißt
+    branches: [ main ]   # oder 'master'
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
@@ -16,10 +19,12 @@ jobs:
           channel: stable
 
       - run: flutter config --enable-web
-      - run: flutter build web --release
+      - run: flutter build web --release --base-href /LAP_Lernapp/
+      - run: cp build/web/index.html build/web/404.html
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
           publish_dir: build/web
