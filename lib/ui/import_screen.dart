@@ -1,23 +1,14 @@
-// lib/ui/import_screen.dart
-import 'package:file_picker/file_picker.dart';
+// lib/screens/import_screen.dart
+import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:file_selector/file_selector.dart';
 
 import '../models/flashcard.dart';
-import '../models/progress_update.dart';
-import '../services/pdf_parser.dart';
-import '../services/storage_service.dart';
-import './widgets/progress_dialog.dart';
+import 'lernmodus_screen.dart';
 
-/// --- helper: de-dupe by flashcard.id ---
-List<Flashcard> _dedupeById(List<Flashcard> list) {
-  final seen = <String>{};
-  final out = <Flashcard>[];
-  for (final c in list) {
-    if (seen.add(c.id)) out.add(c);
-  }
-  return out;
-}
-
+/// Eine Import-Seite, die JSON-Decks lädt (Web/Android/iOS/Desktop).
+/// Benötigt: `file_selector` (flutter pub add file_selector)
 class ImportScreen extends StatefulWidget {
   const ImportScreen({super.key});
 
@@ -26,179 +17,288 @@ class ImportScreen extends StatefulWidget {
 }
 
 class _ImportScreenState extends State<ImportScreen> {
-  bool _isLoading = false;
-  String? _sourceName;
+  String? _rawJson;
+  List<Flashcard> _parsed = [];
+  String _status = 'Keine Datei ausgewählt.';
+  String _deckTitle = 'Neues Deck';
 
-  String _basenameNoExt(String name) {
-    final slash = name.replaceAll('\\', '/');
-    final base = slash.split('/').last;
-    final dot = base.lastIndexOf('.');
-    return dot > 0 ? base.substring(0, dot) : base;
-  }
+  bool get _hasData => _parsed.isNotEmpty;
 
-  Future<void> _handleParsingDone({
-    required BuildContext rootContext,
-    required List<Flashcard> cards,
-    required String sourceName,
-  }) async {
-    Navigator.of(rootContext, rootNavigator: true).pop();
-    if (mounted) setState(() => _isLoading = false);
-
-    if (cards.isEmpty) {
-      if (mounted) {
-        ScaffoldMessenger.of(rootContext).showSnackBar(
-          const SnackBar(content: Text('Keine Karten erkannt.')),
-        );
-      }
-      return;
-    }
-
-    final title = _basenameNoExt(sourceName);
-
+  Future<void> _pickJsonFile() async {
     try {
-      // ignore: avoid_print
-      print('💾 Speichere Deck "$title" (${cards.length} Karten) …');
-      await StorageService.saveDeck(
-        title: title,
-        cards: cards,
-        sourceName: sourceName,
+      final typeGroup = XTypeGroup(
+        label: 'JSON',
+        extensions: const ['json'],
+        mimeTypes: const ['application/json', 'text/json'],
       );
-      // ignore: avoid_print
-      print('✅ Deck gespeichert');
+      final XFile? file = await openFile(acceptedTypeGroups: [typeGroup]);
+      if (file == null) return;
 
-      if (!mounted) return;
+      final bytes = await file.readAsBytes();
+      final text = utf8.decode(bytes);
 
-      ScaffoldMessenger.of(rootContext).showSnackBar(
-        SnackBar(content: Text('Gespeichert: "$title" (${cards.length} Karten)')),
-      );
-
-      Navigator.of(rootContext).pop(true); // zurück zur Übersicht + Refresh
+      await _loadFromRawJson(text, suggestedTitle: _fileNameWithoutExt(file.name));
     } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(rootContext).showSnackBar(
-        SnackBar(content: Text('Speichern fehlgeschlagen: $e')),
-      );
+      setState(() {
+        _status = 'Fehler beim Öffnen: $e';
+        _parsed = [];
+      });
     }
   }
 
-  Future<void> _pickAndParsePdf() async {
+  Future<void> _pasteJsonManually() async {
+    final controller = TextEditingController(text: _rawJson ?? '');
+    final result = await showDialog<String?>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('JSON einfügen'),
+        content: SizedBox(
+          width: 520,
+          child: TextField(
+            controller: controller,
+            maxLines: 12,
+            decoration: const InputDecoration(
+              hintText: '{ "title": "Mein Deck", "cards": [ ... ] } oder [ ... ]',
+              border: OutlineInputBorder(),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, null),
+            child: const Text('Abbrechen'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(ctx, controller.text),
+            icon: const Icon(Icons.save),
+            label: const Text('Übernehmen'),
+          ),
+        ],
+      ),
+    );
+
+    if (result == null) return;
+
+    await _loadFromRawJson(result);
+  }
+
+  Future<void> _loadFromRawJson(String text, {String? suggestedTitle}) async {
+    setState(() {
+      _status = 'Lese JSON…';
+      _rawJson = text;
+    });
     try {
-      setState(() => _isLoading = true);
+      final decoded = jsonDecode(text);
 
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: const ['pdf'],
-        withData: false,
-      );
+      // akzeptiere zwei Formen:
+      // 1) { "title": "Deckname", "cards": [ {...}, ... ] }
+      // 2) [ {...}, {...}, ... ]  (nur Karten)
+      String? titleFromJson;
+      List<dynamic> rawCards;
 
-      if (!mounted) return;
-
-      if (result == null) {
-        setState(() => _isLoading = false);
-        return;
+      if (decoded is Map<String, dynamic>) {
+        titleFromJson = (decoded['title'] ?? decoded['name'] ?? '').toString().trim();
+        final cardsAny = decoded['cards'] ?? decoded['flashcards'] ?? decoded['items'];
+        if (cardsAny is! List) {
+          throw const FormatException('Erwarte Feld "cards" als Liste.');
+        }
+        rawCards = cardsAny;
+      } else if (decoded is List) {
+        rawCards = decoded;
+      } else {
+        throw const FormatException('Unerwartetes JSON-Format.');
       }
 
-      final file = result.files.single;
-      _sourceName = file.name;
+      final cards = <Flashcard>[];
+      for (final item in rawCards) {
+        if (item is! Map) {
+          // Versuche tolerant zu sein – aber nur Maps sind sinnvoll.
+          continue;
+        }
+        // Erwartet: Flashcard.fromJson(Map<String, dynamic>)
+        cards.add(Flashcard.fromJson(Map<String, dynamic>.from(item)));
+      }
 
-      final rootContext = context;
-      final stopwatch = Stopwatch()..start();
+      if (cards.isEmpty) {
+        throw const FormatException('Keine Karten gefunden.');
+      }
 
-      // NEW: stream to disk
-      final writer = await StreamingDeckWriter.begin(
-        title: _basenameNoExt(_sourceName!),
-        sourceName: _sourceName!,
-      );
-
-      await showDialog<void>(
-        context: rootContext,
-        barrierDismissible: false,
-        builder: (dialogContext) {
-          return StreamBuilder<ProgressUpdate>(
-            stream: PdfParser.parseWithProgress(file, debug: false),
-            builder: (ctx, snapshot) {
-              final d = snapshot.data;
-
-              if (d?.cards != null && d!.cards!.isNotEmpty) {
-                // write to disk immediately to keep RAM low
-                writer.appendCards(d.cards!);
-              }
-              if (d?.unmatched != null && d!.unmatched!.isNotEmpty) {
-                writer.appendNotes(d.unmatched!);
-              }
-              if (d?.done == true) {
-                WidgetsBinding.instance.addPostFrameCallback((_) async {
-                  if (!mounted) return;
-                  Navigator.of(dialogContext).pop();
-                  try {
-                    await writer.finish();
-                    if (!mounted) return;
-                    ScaffoldMessenger.of(rootContext).showSnackBar(
-                      SnackBar(content: Text('Gespeichert: "${_basenameNoExt(_sourceName!)}" (${writer.cardCount} Karten)')),
-                    );
-                    Navigator.of(rootContext).pop(true);
-                  } catch (e) {
-                    if (!mounted) return;
-                    ScaffoldMessenger.of(rootContext).showSnackBar(
-                      SnackBar(content: Text('Speichern fehlgeschlagen: $e')),
-                    );
-                  }
-                });
-              }
-
-              return ProgressDialog(
-                current: d?.current ?? 0,
-                total: d?.total ?? 1,
-                elapsed: stopwatch.elapsed,
-                snippet: d?.snippet,
-                debugMessage: d?.debugMessage,
-              );
-            },
-          );
-        },
-      );
-
-      if (!mounted) return;
-      setState(() => _isLoading = false);
+      setState(() {
+        _parsed = cards;
+        _deckTitle = (titleFromJson?.isNotEmpty == true)
+            ? titleFromJson!
+            : (suggestedTitle ?? 'Neues Deck');
+        _status = 'Geladen: ${cards.length} Karten'
+            '${_deckTitle.isNotEmpty ? " • Titel: $_deckTitle" : ""}';
+      });
+    } on FormatException catch (e) {
+      setState(() {
+        _status = 'Format-Fehler: ${e.message}';
+        _parsed = [];
+      });
     } catch (e) {
-      if (!mounted) return;
-      setState(() => _isLoading = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Fehler beim Einlesen: $e')),
+      setState(() {
+        _status = 'Fehler beim Parsen: $e';
+        _parsed = [];
+      });
+    }
+  }
+
+  String _fileNameWithoutExt(String name) {
+    final dot = name.lastIndexOf('.');
+    return dot > 0 ? name.substring(0, dot) : name;
+  }
+
+  void _startLearning() {
+    if (!_hasData) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => LernmodusScreen(
+          cards: _parsed,
+          title: _deckTitle,
+          progressKey: _deckTitle, // stabiler Key pro Deck-Name
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPreview() {
+    if (_parsed.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.info_outline),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                _status,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.8),
+                ),
+              ),
+            ),
+          ],
+        ),
       );
     }
+
+    // Zeige eine kurze Vorschau von 3 Karten
+    final preview = _parsed.take(3).toList();
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: Theme.of(context).colorScheme.outline.withOpacity(0.25),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(_status, style: const TextStyle(fontWeight: FontWeight.w700)),
+          const SizedBox(height: 12),
+          ...preview.map((c) => Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(Icons.style, size: 18),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Q: ${c.question}\nA: ${c.answer}',
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              )),
+          if (_parsed.length > preview.length)
+            Text('+ ${_parsed.length - preview.length} weitere …',
+                style: TextStyle(
+                  fontStyle: FontStyle.italic,
+                  color:
+                      Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                )),
+        ],
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final isWeb = kIsWeb;
+
     return Scaffold(
-      appBar: AppBar(title: const Text('PDF → Karteikarten')),
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.picture_as_pdf,
-                  size: 72, color: Theme.of(context).colorScheme.primary),
-              const SizedBox(height: 16),
-              const Text(
-                'Wähle ein PDF mit Fragen & Antworten aus.\n'
-                'Die App erzeugt daraus Karteikarten, speichert ein Deck\n'
-                'und kehrt zur Übersicht zurück.',
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 24),
-              FilledButton.icon(
-                onPressed: _isLoading ? null : _pickAndParsePdf,
-                icon: const Icon(Icons.upload_file),
-                label: const Text('PDF auswählen'),
-              ),
-              if (_isLoading) ...[
-                const SizedBox(height: 24),
-                const CircularProgressIndicator(),
+      appBar: AppBar(
+        title: const Text('Deck importieren'),
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 720),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'Wähle eine JSON-Datei mit deinen Karten aus. '
+                  'Diese Seite funktioniert auf ${isWeb ? "Web" : "allen Plattformen"} ohne path_provider.',
+                ),
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 12,
+                  children: [
+                    FilledButton.icon(
+                      onPressed: _pickJsonFile,
+                      icon: const Icon(Icons.file_open_rounded),
+                      label: const Text('Datei auswählen (.json)'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: _pasteJsonManually,
+                      icon: const Icon(Icons.paste_rounded),
+                      label: const Text('JSON einfügen'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                _buildPreview(),
+                const Spacer(),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: TextEditingController(text: _deckTitle),
+                        onChanged: (v) => _deckTitle = v.trim().isEmpty ? 'Neues Deck' : v.trim(),
+                        decoration: const InputDecoration(
+                          labelText: 'Deck-Titel',
+                          prefixIcon: Icon(Icons.title),
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: FilledButton.icon(
+                        onPressed: _hasData ? _startLearning : null,
+                        icon: const Icon(Icons.play_arrow_rounded),
+                        label: const Text('Lernmodus starten'),
+                      ),
+                    ),
+                  ],
+                ),
               ],
-            ],
+            ),
           ),
         ),
       ),
