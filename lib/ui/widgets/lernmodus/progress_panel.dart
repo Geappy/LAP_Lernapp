@@ -72,7 +72,7 @@ class _ProgressPanelState extends State<ProgressPanel> {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text(
-                      'Gesamt: $total  •  Favoriten: ${widget.favoritesCount}  •  Notizen: ${widget.notesCount}',
+                      'Gesamt: $total  •  Favoriten: ${widget.favoritesCount}',
                       style: TextStyle(
                         color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
                       ),
