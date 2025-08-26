@@ -21,7 +21,7 @@ class KartenApp extends StatelessWidget {
     return MaterialApp(
       title: 'Karteikarten',
       debugShowCheckedModeBanner: false,
-      themeMode: ThemeMode.system, // folgt System hell/dunkel
+      themeMode: ThemeMode.system,
       theme: ThemeData(
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(seedColor: _seed, brightness: Brightness.light),

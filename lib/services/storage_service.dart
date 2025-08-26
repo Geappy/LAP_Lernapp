@@ -1,8 +1,7 @@
 // lib/services/storage_service.dart
+import 'dart:async';   // <-- needed for Completer & Future
 import 'dart:convert';
-// Wichtig: KEIN dart:io und KEIN path_provider hier – das bricht auf Web!
-// import 'dart:io';
-// import 'package:path_provider/path_provider.dart';
+import 'dart:math';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -11,49 +10,67 @@ import '../models/flashcard.dart';
 import '../models/unmatched.dart';
 
 class StorageService {
-  // Keys for SharedPreferences
+  // ------- Keys -------
   static const _kIndex = 'decks_index'; // List<String> ids
   static String _deckKey(String id) => 'deck_$id'; // String (JSON)
+  static String _deckMetaKey(String id) => 'deck_${id}_meta'; // String (JSON)
 
+  static final Future<SharedPreferences> _prefs = SharedPreferences.getInstance();
+  static final _mutex = _Mutex();
+
+  // ------- Helpers -------
   static Future<List<String>> _getIndex(SharedPreferences prefs) async {
-    final list = prefs.getStringList(_kIndex);
-    return list ?? <String>[];
+    return prefs.getStringList(_kIndex) ?? <String>[];
   }
 
   static Future<void> _setIndex(SharedPreferences prefs, List<String> ids) async {
     await prefs.setStringList(_kIndex, ids);
   }
 
-  // -------- Public API --------
+  static Future<void> _writeDeckAndMeta(SharedPreferences prefs, Deck deck) async {
+    final deckJson = jsonEncode(deck.toJson());
+    final metaJson = jsonEncode({
+      'id': deck.id,
+      'title': deck.title,
+      'cardCount': deck.cardCount,
+      'createdAt': deck.createdAt.toIso8601String(),
+      'updatedAt': deck.updatedAt.toIso8601String(),
+      'unmatchedCount': deck.unmatched.length,
+    });
+
+    final ok1 = await prefs.setString(_deckKey(deck.id), deckJson);
+    final ok2 = await prefs.setString(_deckMetaKey(deck.id), metaJson);
+    if (!ok1 || !ok2) throw Exception('Deck konnte nicht gespeichert werden');
+  }
+
+  // ------- Public API -------
 
   static Future<List<DeckMeta>> listDecks() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefs;
     final ids = await _getIndex(prefs);
-
     final metas = <DeckMeta>[];
+
     for (final id in ids) {
-      final jsonStr = prefs.getString(_deckKey(id));
-      if (jsonStr == null) continue;
+      final metaStr = prefs.getString(_deckMetaKey(id));
+      if (metaStr == null) continue;
       try {
-        final deck = Deck.fromJson(jsonDecode(jsonStr) as Map<String, dynamic>);
+        final m = jsonDecode(metaStr) as Map<String, dynamic>;
         metas.add(DeckMeta(
-          id: deck.id,
-          title: deck.title,
-          cardCount: deck.cardCount,
-          createdAt: deck.createdAt,
-          updatedAt: deck.updatedAt,
-          unmatchedCount: deck.unmatched.isEmpty ? 0 : deck.unmatched.length,
+          id: m['id'] as String,
+          title: m['title'] as String,
+          cardCount: (m['cardCount'] as num).toInt(),
+          createdAt: DateTime.parse(m['createdAt'] as String),
+          updatedAt: DateTime.parse(m['updatedAt'] as String),
+          unmatchedCount: (m['unmatchedCount'] as num?)?.toInt() ?? 0,
         ));
-      } catch (_) {
-        // skip broken deck entry
-      }
+      } catch (_) {}
     }
-    metas.sort((a, b) => b.updatedAt.compareTo(a.updatedAt)); // newest first
+    metas.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
     return metas;
   }
 
   static Future<Deck?> loadDeck(String id) async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _prefs;
     final jsonStr = prefs.getString(_deckKey(id));
     if (jsonStr == null) return null;
     try {
@@ -63,89 +80,106 @@ class StorageService {
     }
   }
 
-  /// Saves a whole deck (used by non-streaming imports or after edits)
   static Future<String> saveDeck({
+    String? id,
     required String title,
     required List<Flashcard> cards,
     String? sourceName,
     List<Unmatched>? unmatched,
-  }) async {
-    final prefs = await SharedPreferences.getInstance();
-    final now = DateTime.now();
-    final id = now.millisecondsSinceEpoch.toString();
+  }) {
+    return _mutex.run(() async {
+      final prefs = await _prefs;
+      final now = DateTime.now();
+      final deckId = id ?? _uuidV4();
 
-    final deck = Deck(
-      id: id,
-      title: title,
-      sourceName: sourceName,
-      createdAt: now,
-      updatedAt: now,
-      cards: cards,
-      unmatched: unmatched ?? const [],
-    );
+      final deck = Deck(
+        id: deckId,
+        title: title,
+        sourceName: sourceName,
+        createdAt: now,
+        updatedAt: now,
+        cards: cards,
+        unmatched: unmatched ?? const [],
+      );
 
-    final ok = await prefs.setString(_deckKey(id), jsonEncode(deck.toJson()));
-    if (!ok) {
-      throw Exception('Deck konnte nicht gespeichert werden');
-    }
+      await _writeDeckAndMeta(prefs, deck);
 
-    final ids = await _getIndex(prefs);
-    ids.add(id);
-    await _setIndex(prefs, ids);
-    return id;
+      final ids = await _getIndex(prefs);
+      if (!ids.contains(deckId)) {
+        ids.add(deckId);
+        await _setIndex(prefs, ids);
+      }
+      return deckId;
+    });
   }
 
-  static Future<void> updateDeck(Deck deck) async {
-    final prefs = await SharedPreferences.getInstance();
-    final updated = deck.copyWith(updatedAt: DateTime.now());
-    final ok = await prefs.setString(_deckKey(updated.id), jsonEncode(updated.toJson()));
-    if (!ok) {
-      throw Exception('Deck-Update fehlgeschlagen');
-    }
+  static Future<void> updateDeck(Deck deck) {
+    return _mutex.run(() async {
+      final prefs = await _prefs;
+      final updated = deck.copyWith(updatedAt: DateTime.now());
+      await _writeDeckAndMeta(prefs, updated);
+    });
   }
 
-  static Future<void> renameDeck(String id, String newTitle) async {
+  static Future<bool> renameDeck(String id, String newTitle) async {
     final deck = await loadDeck(id);
-    if (deck == null) return;
-    await updateDeck(deck.copyWith(title: newTitle, updatedAt: DateTime.now()));
+    if (deck == null) return false;
+    await updateDeck(deck.copyWith(title: newTitle));
+    return true;
   }
 
-  static Future<void> deleteDeck(String id) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_deckKey(id));
-    final ids = await _getIndex(prefs);
-    ids.remove(id);
-    await _setIndex(prefs, ids);
+  static Future<void> deleteDeck(String id) {
+    return _mutex.run(() async {
+      final prefs = await _prefs;
+      await prefs.remove(_deckKey(id));
+      await prefs.remove(_deckMetaKey(id));
+      final ids = await _getIndex(prefs);
+      ids.removeWhere((e) => e == id);
+      await _setIndex(prefs, ids);
+    });
   }
 
-  static Future<void> upsertCard({
+  static Future<bool> upsertCard({
     required String deckId,
     required Flashcard card,
   }) async {
     final deck = await loadDeck(deckId);
-    if (deck == null) return;
+    if (deck == null) return false;
+
     final idx = deck.cards.indexWhere((c) => c.id == card.id);
     final newCards = [...deck.cards];
-    if (idx >= 0) {
-      newCards[idx] = card;
-    } else {
+    final inserted = idx < 0;
+
+    if (inserted) {
       newCards.add(card);
+    } else {
+      newCards[idx] = card;
     }
     await updateDeck(deck.copyWith(cards: newCards));
+    return inserted;
+  }
+
+  // ---------- Utilities ----------
+  static String _uuidV4() {
+    final rand = Random();
+    final bytes = List<int>.generate(16, (_) => rand.nextInt(256));
+    bytes[6] = (bytes[6] & 0x0F) | 0x40; // version
+    bytes[8] = (bytes[8] & 0x3F) | 0x80; // variant
+
+    String b(int i) => bytes[i].toRadixString(16).padLeft(2, '0');
+    return '${b(0)}${b(1)}${b(2)}${b(3)}-'
+        '${b(4)}${b(5)}-'
+        '${b(6)}${b(7)}-'
+        '${b(8)}${b(9)}-'
+        '${b(10)}${b(11)}${b(12)}${b(13)}${b(14)}${b(15)}';
   }
 }
 
-///
-/// Web-sichere Streaming-Variante ohne Dateien:
-/// - sammelt Karten/Notizen im Speicher
-/// - schreibt am Ende das komplette Deck in SharedPreferences
-///
-/// API kompatibel zu deiner bisherigen Nutzung.
-///
+/// Web-sicherer Streaming-Writer: sammelt Karten/Notizen im Speicher
+/// und speichert alles am Ende in SharedPreferences.
 class StreamingDeckWriter {
   final String title;
   final String? sourceName;
-  final String deckId;
 
   final List<Flashcard> _cards = [];
   final List<Unmatched> _notes = [];
@@ -154,15 +188,13 @@ class StreamingDeckWriter {
   int _count = 0;
   int _notesCount = 0;
 
-  StreamingDeckWriter._(this.title, this.sourceName, this.deckId);
+  StreamingDeckWriter._(this.title, this.sourceName);
 
   static Future<StreamingDeckWriter> begin({
     required String title,
     String? sourceName,
   }) async {
-    final ts = DateTime.now().millisecondsSinceEpoch;
-    final deckId = 'deck_$ts';
-    return StreamingDeckWriter._(title, sourceName, deckId);
+    return StreamingDeckWriter._(title, sourceName);
   }
 
   void appendCards(List<Flashcard> cards) {
@@ -177,22 +209,35 @@ class StreamingDeckWriter {
     _notesCount += notes.length;
   }
 
-  /// Finalize:
-  /// - save via StorageService.saveDeck (SharedPreferences)
   Future<String> finish() async {
-    if (_finished) return deckId;
+    if (_finished) throw StateError('finish() wurde bereits aufgerufen.');
     _finished = true;
 
-    final savedId = await StorageService.saveDeck(
+    return StorageService.saveDeck(
       title: title,
       cards: _cards,
       sourceName: sourceName,
       unmatched: _notes,
     );
-
-    return savedId;
   }
 
   int get cardCount => _count;
   int get unmatchedCount => _notesCount;
+}
+
+/// Very small in-process mutex.
+class _Mutex {
+  Future<void> _tail = Future.value();
+
+  Future<T> run<T>(Future<T> Function() action) {
+    final completer = Completer<T>();
+    _tail = _tail.then((_) async {
+      try {
+        completer.complete(await action());
+      } catch (e, st) {
+        completer.completeError(e, st);
+      }
+    });
+    return completer.future;
+  }
 }
