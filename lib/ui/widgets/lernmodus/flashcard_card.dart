@@ -81,145 +81,143 @@ class FlashcardCard extends StatelessWidget {
           ),
           child: Padding(
             padding: const EdgeInsets.all(20),
-            child: Stack(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // CONTENT
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if ((card.number ?? '').isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 6, right: 64),
+                if ((card.number ?? '').isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.confirmation_number, size: 16),
+                        const SizedBox(width: 6),
+                        Text(
+                          card.number!,
+                          style: TextStyle(
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurface
+                                .withOpacity(0.7),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                // main content area (question or answer, top-left anchored)
+                Expanded(
+                  child: Stack(
+                    children: [
+                      ScrollConfiguration(
+                        behavior: const _NoGlow(),
+                        child: SingleChildScrollView(
+                          child: AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 200),
+                            child: revealed
+                                ? Text(
+                                    card.answer,
+                                    key: const ValueKey('answer'),
+                                    style: const TextStyle(
+                                      fontSize: 22,
+                                      fontWeight: FontWeight.w800,
+                                      height: 1.2,
+                                    ),
+                                  )
+                                : Text(
+                                    card.question,
+                                    key: const ValueKey('question'),
+                                    style: const TextStyle(
+                                      fontSize: 22,
+                                      fontWeight: FontWeight.w800,
+                                      height: 1.2,
+                                    ),
+                                  ),
+                          ),
+                        ),
+                      ),
+
+                      // favorite + note buttons inside top-right corner of content area
+                      Positioned(
+                        right: 0,
+                        top: 0,
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Icon(Icons.confirmation_number, size: 16),
-                            const SizedBox(width: 6),
-                            Text(
-                              card.number!,
-                              style: TextStyle(
-                                fontWeight: FontWeight.w600,
-                                fontSize: 13,
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSurface
-                                    .withOpacity(0.7),
+                            IconButton(
+                              splashRadius: 24,
+                              tooltip: note.isNotEmpty
+                                  ? 'Notiz bearbeiten'
+                                  : 'Notiz hinzufügen',
+                              onPressed: () => _openNoteEditor(context),
+                              icon: Icon(
+                                note.isNotEmpty
+                                    ? Icons.edit_note_rounded
+                                    : Icons.note_add_outlined,
+                                size: 26,
+                                color: note.isNotEmpty
+                                    ? Theme.of(context).colorScheme.primary
+                                    : Theme.of(context)
+                                        .colorScheme
+                                        .onSurface
+                                        .withOpacity(0.6),
+                              ),
+                            ),
+                            IconButton(
+                              splashRadius: 24,
+                              tooltip: isFavorite
+                                  ? 'Aus Favoriten entfernen'
+                                  : 'Zu Favoriten',
+                              onPressed: onToggleFavorite,
+                              icon: Icon(
+                                isFavorite
+                                    ? Icons.star_rounded
+                                    : Icons.star_border_rounded,
+                                size: 26,
+                                color: isFavorite
+                                    ? Colors.amber
+                                    : Theme.of(context)
+                                        .colorScheme
+                                        .onSurface
+                                        .withOpacity(0.6),
                               ),
                             ),
                           ],
                         ),
                       ),
-
-                    // top text (question OR answer title area)
-                    AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 200),
-                      switchInCurve: Curves.easeOut,
-                      switchOutCurve: Curves.easeIn,
-                      child: revealed
-                          ? const SizedBox.shrink(key: ValueKey('qGone'))
-                          : Text(
-                              card.question,
-                              key: const ValueKey('question'),
-                              style: const TextStyle(
-                                fontSize: 22,
-                                fontWeight: FontWeight.w800,
-                                height: 1.2,
-                              ),
-                            ),
-                    ),
-                    const SizedBox(height: 14),
-                    Divider(
-                      height: 1,
-                      color: Theme.of(context)
-                          .colorScheme
-                          .outline
-                          .withOpacity(0.25),
-                    ),
-                    const SizedBox(height: 10),
-
-                    // main scrollable content (question OR answer body)
-                    Expanded(
-                      child: AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 200),
-                        switchInCurve: Curves.easeOut,
-                        switchOutCurve: Curves.easeIn,
-                        child: _ScrollableText(
-                          key: ValueKey(revealed ? 'answer' : 'questionBody'),
-                          text: revealed ? card.answer : card.question,
-                          // KEEP your original styles:
-                          textStyle: revealed
-                              ? const TextStyle(fontSize: 18, height: 1.35) // answer style
-                              : const TextStyle(
-                                  fontSize: 22,
-                                  fontWeight: FontWeight.w800,
-                                  height: 1.2,
-                                ), // question style
-                        ),
-                      ),
-                    ),
-
-                    if (note.trim().isNotEmpty) ...[
-                      const SizedBox(height: 12),
-                      _NotePreview(text: note, onTap: () => _openNoteEditor(context)),
-                    ],
-
-                    const SizedBox(height: 6),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(Icons.touch_app, size: 16),
-                        const SizedBox(width: 6),
-                        Text(
-                          revealed
-                              ? 'Tippe, um die Frage zu zeigen'
-                              : 'Tippe, um die Antwort zu zeigen',
-                          style: TextStyle(
-                            fontSize: 12.5,
-                            fontStyle: FontStyle.italic,
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onSurface
-                                .withOpacity(0.65),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-
-                // ACTIONS (kept out of text flow)
-                Positioned(
-                  right: 0,
-                  top: 0,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconButton(
-                        splashRadius: 24,
-                        tooltip: note.isNotEmpty ? 'Notiz bearbeiten' : 'Notiz hinzufügen',
-                        onPressed: () => _openNoteEditor(context),
-                        icon: Icon(
-                          note.isNotEmpty ? Icons.edit_note_rounded : Icons.note_add_outlined,
-                          size: 26,
-                          color: note.isNotEmpty
-                              ? Theme.of(context).colorScheme.primary
-                              : Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-                        ),
-                      ),
-                      IconButton(
-                        splashRadius: 24,
-                        tooltip: isFavorite ? 'Aus Favoriten entfernen' : 'Zu Favoriten',
-                        onPressed: onToggleFavorite,
-                        icon: Icon(
-                          isFavorite ? Icons.star_rounded : Icons.star_border_rounded,
-                          size: 26,
-                          color: isFavorite
-                              ? Colors.amber
-                              : Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-                        ),
-                      ),
                     ],
                   ),
+                ),
+
+                if (note.trim().isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  _NotePreview(
+                    text: note,
+                    onTap: () => _openNoteEditor(context),
+                  ),
+                ],
+
+                const SizedBox(height: 6),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.touch_app, size: 16),
+                    const SizedBox(width: 6),
+                    Text(
+                      revealed
+                          ? 'Tippe, um die Frage zu zeigen'
+                          : 'Tippe, um die Antwort zu zeigen',
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        fontStyle: FontStyle.italic,
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurface
+                            .withOpacity(0.65),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -259,7 +257,8 @@ class FlashcardCard extends StatelessWidget {
       builder: (ctx) {
         final bottomInset = MediaQuery.of(ctx).viewInsets.bottom;
         return Padding(
-          padding: EdgeInsets.only(left: 16, right: 16, bottom: bottomInset + 16, top: 8),
+          padding: EdgeInsets.only(
+              left: 16, right: 16, bottom: bottomInset + 16, top: 8),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -270,7 +269,10 @@ class FlashcardCard extends StatelessWidget {
                   Expanded(
                     child: Text(
                       'Notiz zur Karte',
-                      style: Theme.of(ctx).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+                      style: Theme.of(ctx)
+                          .textTheme
+                          .titleMedium
+                          ?.copyWith(fontWeight: FontWeight.w700),
                     ),
                   ),
                   TextButton.icon(
@@ -289,7 +291,8 @@ class FlashcardCard extends StatelessWidget {
                 textInputAction: TextInputAction.newline,
                 decoration: InputDecoration(
                   hintText: 'Schreibe deine Gedanken, Eselsbrücken oder Links…',
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                  border:
+                      OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                 ),
               ),
               const SizedBox(height: 12),
@@ -305,10 +308,12 @@ class FlashcardCard extends StatelessWidget {
                   const SizedBox(width: 12),
                   Expanded(
                     child: ElevatedButton.icon(
-                      onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
+                      onPressed: () =>
+                          Navigator.of(ctx).pop(controller.text.trim()),
                       icon: const Icon(Icons.save_rounded),
                       label: const Text('Speichern'),
-                      style: ElevatedButton.styleFrom(minimumSize: const Size.fromHeight(48)),
+                      style: ElevatedButton.styleFrom(
+                          minimumSize: const Size.fromHeight(48)),
                     ),
                   ),
                 ],
@@ -326,31 +331,6 @@ class FlashcardCard extends StatelessWidget {
   }
 }
 
-class _ScrollableText extends StatelessWidget {
-  const _ScrollableText({
-    super.key,
-    required this.text,
-    required this.textStyle,
-  });
-
-  final String text;
-  final TextStyle textStyle;
-
-  @override
-  Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(12),
-      child: ScrollConfiguration(
-        behavior: const _NoGlow(),
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(4, 2, 4, 4),
-          child: Text(text, style: textStyle),
-        ),
-      ),
-    );
-  }
-}
-
 class _NotePreview extends StatelessWidget {
   const _NotePreview({required this.text, required this.onTap});
   final String text;
@@ -360,7 +340,8 @@ class _NotePreview extends StatelessWidget {
   Widget build(BuildContext context) {
     final preview = text.split('\n').first.trim();
     return Material(
-      color: Theme.of(context).colorScheme.secondaryContainer.withOpacity(0.4),
+      color:
+          Theme.of(context).colorScheme.secondaryContainer.withOpacity(0.4),
       borderRadius: BorderRadius.circular(10),
       child: InkWell(
         borderRadius: BorderRadius.circular(10),
@@ -376,7 +357,8 @@ class _NotePreview extends StatelessWidget {
                   preview.isEmpty ? '(Notiz bearbeiten …)' : preview,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 13, fontStyle: FontStyle.italic),
+                  style: const TextStyle(
+                      fontSize: 13, fontStyle: FontStyle.italic),
                 ),
               ),
               const SizedBox(width: 6),
@@ -392,7 +374,8 @@ class _NotePreview extends StatelessWidget {
 class _NoGlow extends ScrollBehavior {
   const _NoGlow();
   @override
-  Widget buildOverscrollIndicator(BuildContext context, Widget child, ScrollableDetails details) {
+  Widget buildOverscrollIndicator(
+      BuildContext context, Widget child, ScrollableDetails details) {
     return child;
   }
 }
