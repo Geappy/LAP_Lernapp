@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-
 import '../../../models/flashcard.dart';
 
 class FlashcardCard extends StatelessWidget {
@@ -25,8 +24,8 @@ class FlashcardCard extends StatelessWidget {
   final int correctCount;
 
   final VoidCallback onToggleReveal;
-  final VoidCallback onSwipeRight; // “right / correct” (only when revealed)
-  final VoidCallback onSwipeLeft;  // “left / wrong”    (only when revealed)
+  final VoidCallback onSwipeRight;
+  final VoidCallback onSwipeLeft;
   final VoidCallback onToggleFavorite;
   final ValueChanged<String> onEditNote;
 
@@ -40,29 +39,21 @@ class FlashcardCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final borderColor = _bucketColor(correctCount);
 
-    // only allow swipe when the answer is revealed (to avoid accidental grading)
-    final dismissDirection =
-        revealed ? DismissDirection.horizontal : DismissDirection.none;
-
-    final key = ValueKey(
-      'card_${card.id}_${revealed ? 1 : 0}_${isFavorite ? 1 : 0}_${note.isNotEmpty ? 1 : 0}',
-    );
-
     return Dismissible(
-      key: key,
-      direction: dismissDirection,
+      key: ValueKey('card_${card.id}_${revealed ? 1 : 0}_${isFavorite ? 1 : 0}_${note.isNotEmpty ? 1 : 0}'),
+      direction: revealed ? DismissDirection.horizontal : DismissDirection.none,
       background: _dismissBg(left: true),
       secondaryBackground: _dismissBg(left: false),
       confirmDismiss: (dir) async {
         if (!revealed) return false;
         if (dir == DismissDirection.startToEnd) {
           HapticFeedback.lightImpact();
-          onSwipeRight(); // correct
+          onSwipeRight();
         } else if (dir == DismissDirection.endToStart) {
           HapticFeedback.lightImpact();
-          onSwipeLeft(); // wrong
+          onSwipeLeft();
         }
-        return false; // don’t remove the widget; we handled it
+        return false;
       },
       child: InkWell(
         borderRadius: BorderRadius.circular(18),
@@ -89,59 +80,146 @@ class FlashcardCard extends StatelessWidget {
             ],
           ),
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            padding: const EdgeInsets.all(20),
+            child: Stack(
               children: [
-                // top row: meta + actions (kept OUTSIDE the text area)
-                _HeaderRow(
-                  number: card.number,
-                  isFavorite: isFavorite,
-                  hasNote: note.trim().isNotEmpty,
-                  onToggleFavorite: onToggleFavorite,
-                  onEditNotePressed: () => _openNoteEditor(context),
-                ),
-                const SizedBox(height: 8),
-
-                // the single-content area: either question OR answer
-                Expanded(
-                  child: _CardContentArea(
-                    revealed: revealed,
-                    question: card.question,
-                    answer: card.answer,
-                  ),
-                ),
-
-                // optional note preview (small, below text, no overlap)
-                if (note.trim().isNotEmpty) ...[
-                  const SizedBox(height: 10),
-                  _NotePreview(
-                    text: note,
-                    onTap: () => _openNoteEditor(context),
-                  ),
-                ],
-
-                const SizedBox(height: 6),
-                // little hint row
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
+                // CONTENT
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Icon(Icons.touch_app, size: 16),
-                    const SizedBox(width: 6),
-                    Text(
-                      revealed
-                          ? 'Tippe, um die Frage zu zeigen'
-                          : 'Tippe, um die Antwort zu zeigen',
-                      style: TextStyle(
-                        fontSize: 12.5,
-                        fontStyle: FontStyle.italic,
-                        color: Theme.of(context)
-                            .colorScheme
-                            .onSurface
-                            .withOpacity(0.65),
+                    if ((card.number ?? '').isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6, right: 64),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.confirmation_number, size: 16),
+                            const SizedBox(width: 6),
+                            Text(
+                              card.number!,
+                              style: TextStyle(
+                                fontWeight: FontWeight.w600,
+                                fontSize: 13,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurface
+                                    .withOpacity(0.7),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                    // top text (question OR answer title area)
+                    AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 200),
+                      switchInCurve: Curves.easeOut,
+                      switchOutCurve: Curves.easeIn,
+                      child: revealed
+                          ? const SizedBox.shrink(key: ValueKey('qGone'))
+                          : Text(
+                              card.question,
+                              key: const ValueKey('question'),
+                              style: const TextStyle(
+                                fontSize: 22,
+                                fontWeight: FontWeight.w800,
+                                height: 1.2,
+                              ),
+                            ),
+                    ),
+                    const SizedBox(height: 14),
+                    Divider(
+                      height: 1,
+                      color: Theme.of(context)
+                          .colorScheme
+                          .outline
+                          .withOpacity(0.25),
+                    ),
+                    const SizedBox(height: 10),
+
+                    // main scrollable content (question OR answer body)
+                    Expanded(
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 200),
+                        switchInCurve: Curves.easeOut,
+                        switchOutCurve: Curves.easeIn,
+                        child: _ScrollableText(
+                          key: ValueKey(revealed ? 'answer' : 'questionBody'),
+                          text: revealed ? card.answer : card.question,
+                          // KEEP your original styles:
+                          textStyle: revealed
+                              ? const TextStyle(fontSize: 18, height: 1.35) // answer style
+                              : const TextStyle(
+                                  fontSize: 22,
+                                  fontWeight: FontWeight.w800,
+                                  height: 1.2,
+                                ), // question style
+                        ),
                       ),
                     ),
+
+                    if (note.trim().isNotEmpty) ...[
+                      const SizedBox(height: 12),
+                      _NotePreview(text: note, onTap: () => _openNoteEditor(context)),
+                    ],
+
+                    const SizedBox(height: 6),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(Icons.touch_app, size: 16),
+                        const SizedBox(width: 6),
+                        Text(
+                          revealed
+                              ? 'Tippe, um die Frage zu zeigen'
+                              : 'Tippe, um die Antwort zu zeigen',
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            fontStyle: FontStyle.italic,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurface
+                                .withOpacity(0.65),
+                          ),
+                        ),
+                      ],
+                    ),
                   ],
+                ),
+
+                // ACTIONS (kept out of text flow)
+                Positioned(
+                  right: 0,
+                  top: 0,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        splashRadius: 24,
+                        tooltip: note.isNotEmpty ? 'Notiz bearbeiten' : 'Notiz hinzufügen',
+                        onPressed: () => _openNoteEditor(context),
+                        icon: Icon(
+                          note.isNotEmpty ? Icons.edit_note_rounded : Icons.note_add_outlined,
+                          size: 26,
+                          color: note.isNotEmpty
+                              ? Theme.of(context).colorScheme.primary
+                              : Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                        ),
+                      ),
+                      IconButton(
+                        splashRadius: 24,
+                        tooltip: isFavorite ? 'Aus Favoriten entfernen' : 'Zu Favoriten',
+                        onPressed: onToggleFavorite,
+                        icon: Icon(
+                          isFavorite ? Icons.star_rounded : Icons.star_border_rounded,
+                          size: 26,
+                          color: isFavorite
+                              ? Colors.amber
+                              : Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
@@ -165,8 +243,8 @@ class FlashcardCard extends StatelessWidget {
         color: left ? Colors.green : Colors.red,
       ),
     );
-    }
-  
+  }
+
   Future<void> _openNoteEditor(BuildContext context) async {
     final controller = TextEditingController(text: note);
     final result = await showModalBottomSheet<String>(
@@ -181,12 +259,7 @@ class FlashcardCard extends StatelessWidget {
       builder: (ctx) {
         final bottomInset = MediaQuery.of(ctx).viewInsets.bottom;
         return Padding(
-          padding: EdgeInsets.only(
-            left: 16,
-            right: 16,
-            bottom: bottomInset + 16,
-            top: 8,
-          ),
+          padding: EdgeInsets.only(left: 16, right: 16, bottom: bottomInset + 16, top: 8),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -197,9 +270,7 @@ class FlashcardCard extends StatelessWidget {
                   Expanded(
                     child: Text(
                       'Notiz zur Karte',
-                      style: Theme.of(ctx).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.w700,
-                          ),
+                      style: Theme.of(ctx).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
                     ),
                   ),
                   TextButton.icon(
@@ -217,11 +288,8 @@ class FlashcardCard extends StatelessWidget {
                 autofocus: true,
                 textInputAction: TextInputAction.newline,
                 decoration: InputDecoration(
-                  hintText:
-                      'Schreibe deine Gedanken, Eselsbrücken oder Links…',
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
+                  hintText: 'Schreibe deine Gedanken, Eselsbrücken oder Links…',
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                 ),
               ),
               const SizedBox(height: 12),
@@ -237,13 +305,10 @@ class FlashcardCard extends StatelessWidget {
                   const SizedBox(width: 12),
                   Expanded(
                     child: ElevatedButton.icon(
-                      onPressed: () =>
-                          Navigator.of(ctx).pop(controller.text.trim()),
+                      onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
                       icon: const Icon(Icons.save_rounded),
                       label: const Text('Speichern'),
-                      style: ElevatedButton.styleFrom(
-                        minimumSize: const Size.fromHeight(48),
-                      ),
+                      style: ElevatedButton.styleFrom(minimumSize: const Size.fromHeight(48)),
                     ),
                   ),
                 ],
@@ -261,185 +326,25 @@ class FlashcardCard extends StatelessWidget {
   }
 }
 
-/// Top row with card number (if any) and action buttons.
-/// Kept separate from the main text to avoid overlap.
-class _HeaderRow extends StatelessWidget {
-  const _HeaderRow({
-    required this.number,
-    required this.isFavorite,
-    required this.hasNote,
-    required this.onToggleFavorite,
-    required this.onEditNotePressed,
-  });
-
-  final String? number;
-  final bool isFavorite;
-  final bool hasNote;
-  final VoidCallback onToggleFavorite;
-  final VoidCallback onEditNotePressed;
-
-  @override
-  Widget build(BuildContext context) {
-    final onSurface = Theme.of(context).colorScheme.onSurface;
-
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        if ((number ?? '').isNotEmpty)
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: onSurface.withOpacity(0.06),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.confirmation_number, size: 14),
-                const SizedBox(width: 6),
-                Text(
-                  number!,
-                  style: TextStyle(
-                    fontWeight: FontWeight.w600,
-                    fontSize: 12.5,
-                    color: onSurface.withOpacity(0.75),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        const Spacer(),
-        IconButton(
-          splashRadius: 22,
-          tooltip: hasNote ? 'Notiz bearbeiten' : 'Notiz hinzufügen',
-          onPressed: onEditNotePressed,
-          icon: Icon(
-            hasNote ? Icons.edit_note_rounded : Icons.note_add_outlined,
-            size: 24,
-            color: hasNote
-                ? Theme.of(context).colorScheme.primary
-                : onSurface.withOpacity(0.7),
-          ),
-        ),
-        IconButton(
-          splashRadius: 22,
-          tooltip: isFavorite ? 'Aus Favoriten entfernen' : 'Zu Favoriten',
-          onPressed: onToggleFavorite,
-          icon: Icon(
-            isFavorite ? Icons.star_rounded : Icons.star_border_rounded,
-            size: 24,
-            color: isFavorite
-                ? Colors.amber
-                : onSurface.withOpacity(0.7),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-/// The main content area that shows either the question OR the answer.
-/// - It’s scrollable (no overflow)
-/// - It animates between sides
-class _CardContentArea extends StatelessWidget {
-  const _CardContentArea({
-    required this.revealed,
-    required this.question,
-    required this.answer,
-  });
-
-  final bool revealed;
-  final String question;
-  final String answer;
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final textStyle = const TextStyle(fontSize: 18, height: 1.35);
-
-    final widgetShown = _ScrollableText(
-      text: revealed ? answer : question,
-      textStyle: textStyle,
-      hintColor: cs.onSurface.withOpacity(0.35),
-    );
-
-    return AnimatedSwitcher(
-      duration: const Duration(milliseconds: 220),
-      switchInCurve: Curves.easeOut,
-      switchOutCurve: Curves.easeIn,
-      transitionBuilder: (child, anim) {
-        // A subtle scale+fade; feels like a flip without heavy 3D
-        return FadeTransition(
-          opacity: anim,
-          child: ScaleTransition(
-            scale: Tween<double>(begin: 0.98, end: 1.0).animate(anim),
-            child: child,
-          ),
-        );
-      },
-      child: widgetShown,
-    );
-  }
-}
-
-/// Scrollable text box with soft edge gradient and no overscroll glow.
 class _ScrollableText extends StatelessWidget {
   const _ScrollableText({
+    super.key,
     required this.text,
     required this.textStyle,
-    required this.hintColor,
   });
 
   final String text;
   final TextStyle textStyle;
-  final Color hintColor;
 
   @override
   Widget build(BuildContext context) {
     return ClipRRect(
       borderRadius: BorderRadius.circular(12),
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          border: Border.all(
-            color: hintColor,
-            width: 1,
-          ),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Stack(
-          children: [
-            ScrollConfiguration(
-              behavior: const _NoGlowBehavior(),
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
-                child: Text(text, style: textStyle),
-              ),
-            ),
-            // bottom fade to hint there’s more
-            Positioned.fill(
-              child: IgnorePointer(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.bottomCenter,
-                      end: Alignment.topCenter,
-                      colors: [
-                        Theme.of(context)
-                            .colorScheme
-                            .surface
-                            .withOpacity(0.0),
-                        Theme.of(context)
-                            .colorScheme
-                            .surface
-                            .withOpacity(0.0),
-                      ],
-                      stops: const [0.0, 0.0],
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ],
+      child: ScrollConfiguration(
+        behavior: const _NoGlow(),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(4, 2, 4, 4),
+          child: Text(text, style: textStyle),
         ),
       ),
     );
@@ -447,11 +352,7 @@ class _ScrollableText extends StatelessWidget {
 }
 
 class _NotePreview extends StatelessWidget {
-  const _NotePreview({
-    required this.text,
-    required this.onTap,
-  });
-
+  const _NotePreview({required this.text, required this.onTap});
   final String text;
   final VoidCallback onTap;
 
@@ -459,10 +360,7 @@ class _NotePreview extends StatelessWidget {
   Widget build(BuildContext context) {
     final preview = text.split('\n').first.trim();
     return Material(
-      color: Theme.of(context)
-          .colorScheme
-          .secondaryContainer
-          .withOpacity(0.4),
+      color: Theme.of(context).colorScheme.secondaryContainer.withOpacity(0.4),
       borderRadius: BorderRadius.circular(10),
       child: InkWell(
         borderRadius: BorderRadius.circular(10),
@@ -478,10 +376,7 @@ class _NotePreview extends StatelessWidget {
                   preview.isEmpty ? '(Notiz bearbeiten …)' : preview,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    fontStyle: FontStyle.italic,
-                  ),
+                  style: const TextStyle(fontSize: 13, fontStyle: FontStyle.italic),
                 ),
               ),
               const SizedBox(width: 6),
@@ -494,13 +389,10 @@ class _NotePreview extends StatelessWidget {
   }
 }
 
-class _NoGlowBehavior extends ScrollBehavior {
-  const _NoGlowBehavior();
-
+class _NoGlow extends ScrollBehavior {
+  const _NoGlow();
   @override
-  Widget buildOverscrollIndicator(
-      BuildContext context, Widget child, ScrollableDetails details) {
-    // just return the child → disables the glow
+  Widget buildOverscrollIndicator(BuildContext context, Widget child, ScrollableDetails details) {
     return child;
   }
 }
