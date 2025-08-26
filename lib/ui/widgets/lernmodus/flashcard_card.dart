@@ -40,7 +40,6 @@ class FlashcardCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
-    // Dismiss only when revealed
     return Dismissible(
       key: ValueKey('flash_${card.id}_${revealed ? 1 : 0}_${isFavorite ? 1 : 0}'),
       direction: revealed ? DismissDirection.horizontal : DismissDirection.none,
@@ -54,7 +53,7 @@ class FlashcardCard extends StatelessWidget {
         } else if (dir == DismissDirection.endToStart) {
           onSwipeLeft();
         }
-        return false; // we never actually remove the widget
+        return false; // never actually remove
       },
       child: InkWell(
         borderRadius: BorderRadius.circular(18),
@@ -77,19 +76,21 @@ class FlashcardCard extends StatelessWidget {
             ],
           ),
           child: Padding(
-            padding: const EdgeInsets.all(20),
+            // ↓ less top padding to pull header up
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // HEADER ROW: number • note • favorite
+                // HEADER: number • note • favorite (tighter + higher)
                 Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
                     if ((card.number ?? '').isNotEmpty)
                       Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(Icons.confirmation_number, size: 16),
-                          const SizedBox(width: 6),
+                          const Icon(Icons.confirmation_number, size: 15),
+                          const SizedBox(width: 4),
                           Text(
                             card.number!,
                             style: TextStyle(
@@ -101,9 +102,9 @@ class FlashcardCard extends StatelessWidget {
                         ],
                       ),
                     const Spacer(),
+                    // tighter icon button (note)
                     IconButton(
                       tooltip: note.trim().isEmpty ? 'Notiz hinzufügen' : 'Notiz bearbeiten',
-                      splashRadius: 22,
                       onPressed: () async {
                         HapticFeedback.selectionClick();
                         final newText = await _editNoteSheet(context, initial: note);
@@ -111,30 +112,35 @@ class FlashcardCard extends StatelessWidget {
                       },
                       icon: Icon(
                         note.trim().isEmpty ? Icons.note_add_outlined : Icons.edit_note_rounded,
-                        size: 24,
+                        size: 22,
                         color: note.trim().isEmpty ? cs.onSurface.withOpacity(0.6) : cs.primary,
                       ),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints.tightFor(width: 36, height: 36),
+                      splashRadius: 20,
                     ),
+                    // tighter icon button (favorite)
                     IconButton(
                       tooltip: isFavorite ? 'Aus Favoriten entfernen' : 'Zu Favoriten',
-                      splashRadius: 22,
                       onPressed: () {
                         HapticFeedback.selectionClick();
                         onToggleFavorite();
                       },
                       icon: Icon(
                         isFavorite ? Icons.star_rounded : Icons.star_border_rounded,
-                        size: 24,
+                        size: 22,
                         color: isFavorite ? Colors.amber : cs.onSurface.withOpacity(0.6),
                       ),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints.tightFor(width: 36, height: 36),
+                      splashRadius: 20,
                     ),
                   ],
                 ),
 
-                // divider
-                const SizedBox(height: 8),
+                // tighter divider spacing
                 Divider(height: 1, color: cs.outline.withOpacity(0.25)),
-                const SizedBox(height: 10),
+                const SizedBox(height: 6),
 
                 // CONTENT: either Question OR Answer (never both)
                 // Scrolls if too long => no overflow
@@ -148,7 +154,6 @@ class FlashcardCard extends StatelessWidget {
                         revealed ? card.answer : card.question,
                         textAlign: TextAlign.left,
                         style: TextStyle(
-                          // keep your original typographic intent:
                           fontSize: revealed ? 18 : 22,
                           height: revealed ? 1.35 : 1.2,
                           fontWeight: revealed ? FontWeight.w400 : FontWeight.w800,
@@ -158,9 +163,9 @@ class FlashcardCard extends StatelessWidget {
                   ),
                 ),
 
-                const SizedBox(height: 10),
+                const SizedBox(height: 8),
 
-                // HINT ROW + (optional) one-line note preview
+                // HINT ROW
                 Center(
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
@@ -168,9 +173,7 @@ class FlashcardCard extends StatelessWidget {
                       const Icon(Icons.touch_app, size: 16),
                       const SizedBox(width: 6),
                       Text(
-                        revealed
-                            ? 'Tippe, um die Frage zu sehen'
-                            : 'Tippe, um die Antwort zu sehen',
+                        revealed ? 'Tippe, um die Frage zu sehen' : 'Tippe, um die Antwort zu sehen',
                         style: TextStyle(
                           fontSize: 13,
                           fontStyle: FontStyle.italic,
@@ -181,13 +184,13 @@ class FlashcardCard extends StatelessWidget {
                   ),
                 ),
 
+                // Optional one-line note preview
                 if (note.trim().isNotEmpty) ...[
                   const SizedBox(height: 8),
                   _NotePreview(
                     text: note,
                     onTap: () async {
-                      final newText =
-                          await _editNoteSheet(context, initial: note);
+                      final newText = await _editNoteSheet(context, initial: note);
                       if (newText != null) await onEditNote(newText);
                     },
                   ),
